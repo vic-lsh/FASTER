@@ -285,6 +285,10 @@ uint64_t fnv1_64_hash(uint64_t value) {
   return hash;
 }
 
+uint64_t index_to_key(uint64_t index) {
+  return fnv1_64_hash(index) % kMaxKey;
+}
+
 void init_zipfian_ctxt() {
   zipfian_ctxt_.zetan = 0;
   for (uint64_t i = 1; i < num_records_ + 1; ++i) {
@@ -316,13 +320,13 @@ uint64_t next_zipfian(unsigned int *seedp) {
     ret = (uint64_t) ((double)num_records_ * pow(zipfian_ctxt_.eta * u - zipfian_ctxt_.eta + 1, zipfian_ctxt_.alpha));
   }
   ret = ret % num_records_;
-  return fnv1_64_hash(ret);
+  return index_to_key(ret);
 }
 
 uint64_t next_uniform(unsigned int *seedp) {
   uint64_t ret = (uint64_t) rand_r(seedp);
   ret = ret % num_records_;
-  return fnv1_64_hash(ret);
+  return index_to_key(ret);
 }
 
 void setup_store(store_t* store) {
@@ -340,7 +344,7 @@ void setup_store(store_t* store) {
         store->CompletePending(false);
       }
     }
-    UpsertContext context{ fnv1_64_hash(i), value };
+    UpsertContext context{ index_to_key(i), value };
     store->Upsert(context, callback, 1);
   }
 
