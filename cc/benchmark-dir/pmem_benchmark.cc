@@ -306,7 +306,7 @@ void init_zipfian_ctxt() {
 
 double next_double(unsigned int *seedp) {
   return (((uint64_t) rand_r(seedp)) | (((uint64_t) rand_r(seedp)) << 32))
-         / (((uint64_t) RAND_MAX) | (RAND_MAX << 32));
+         / (((uint64_t) RAND_MAX) | (((uint64_t) RAND_MAX) << 32));
 }
 
 uint64_t next_zipfian(unsigned int *seedp) {
