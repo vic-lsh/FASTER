@@ -305,7 +305,8 @@ void init_zipfian_ctxt() {
 }
 
 double next_double(unsigned int *seedp) {
-  return ((double)rand_r(seedp)) / RAND_MAX;
+  return (((uint64_t) rand_r(seedp)) | (((uint64_t) rand_r(seedp)) << 32))
+         / (((uint64_t) RAND_MAX) | (RAND_MAX << 32));
 }
 
 uint64_t next_zipfian(unsigned int *seedp) {
@@ -454,7 +455,7 @@ void run_benchmark(store_t* store, size_t num_threads) {
 
   printf("Finished benchmark: %.2f ops/second/thread\n",
          ((double)total_reads_done_ + (double)total_writes_done_) / ((double)total_duration_ /
-             kNanosPerSecond));
+         kNanosPerSecond));
 }
 
 void run(Workload workload, size_t num_threads) {
