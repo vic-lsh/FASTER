@@ -364,7 +364,7 @@ void setup_store(store_t* store, size_t num_threads) {
   for(size_t thread_idx = 0; thread_idx < num_threads; ++thread_idx) {
     threads.emplace_back(&thread_setup_store, store, thread_idx,
                          thread_idx * num_records_per_thread,
-                         min((thread_idx + 1) * num_records_per_thread, num_records_));
+                         std::min((thread_idx + 1) * num_records_per_thread, num_records_));
   }
   for(auto& thread : threads) {
     thread.join();
