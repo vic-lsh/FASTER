@@ -347,7 +347,7 @@ void setup_store(store_t* store) {
   store->CompletePending(true);
   store->StopSession();
 
-  printf("Finished populating store: contains %lld elements.\n", num_records_);
+  printf("Finished populating store: contains %ld elements.\n", num_records_);
 }
 
 template <Op(*FN)(std::mt19937&)>
@@ -467,6 +467,10 @@ void run(Workload workload, size_t num_threads) {
   setup_store(&store);
 
   store.DumpDistribution();
+
+  printf("Configuring distribution\n");
+  if (zipfian_constant_ > 0)
+    init_zipfian_ctxt();
 
   printf("Running benchmark on %" PRIu64 " threads...\n", num_threads);
   switch(workload) {
