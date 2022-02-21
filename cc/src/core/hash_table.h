@@ -50,6 +50,8 @@ class InternalHashTable {
       }
       buckets_ = reinterpret_cast<HashBucket*>(aligned_alloc(alignment,
                  size_ * sizeof(HashBucket)));
+      printf("Hash table virtual address: [%ld, %ld)\n", (uint64_t) buckets_,
+             ((uint64_t) buckets_) + size_ * sizeof(HashBucket));
     }
     std::memset(buckets_, 0, size_ * sizeof(HashBucket));
     assert(pending_checkpoint_writes_ == 0);
