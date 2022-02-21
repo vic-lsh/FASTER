@@ -476,7 +476,7 @@ void run_benchmark(store_t* store, size_t num_threads) {
          kNanosPerSecond));
 }
 
-void run(Workload workload, size_t num_threads) {
+void run(Workload workload, size_t num_load_threads, size_t num_run_threads) {
   // FASTER store has a hash table with approx. kInitCount / 2 entries and a log of size 16 GB
   size_t init_size = next_power_of_two(num_records_ / 2);
   store_t store{
@@ -487,7 +487,7 @@ void run(Workload workload, size_t num_threads) {
 
   printf("Populating the store...\n");
 
-  setup_store(&store, num_threads);
+  setup_store(&store, num_load_threads);
 
   store.DumpDistribution();
 
@@ -498,10 +498,10 @@ void run(Workload workload, size_t num_threads) {
   printf("Running benchmark on %" PRIu64 " threads...\n", num_threads);
   switch(workload) {
   case Workload::A_50_50:
-    run_benchmark<ycsb_a_50_50>(&store, num_threads);
+    run_benchmark<ycsb_a_50_50>(&store, num_run_threads);
     break;
   case Workload::RMW_100:
-    run_benchmark<ycsb_rmw_100>(&store, num_threads);
+    run_benchmark<ycsb_rmw_100>(&store, num_run_threads);
     break;
   default:
     printf("Unknown workload!\n");
@@ -510,19 +510,20 @@ void run(Workload workload, size_t num_threads) {
 }
 
 int main(int argc, char* argv[]) {
-  constexpr size_t kNumArgs = 5;
+  constexpr size_t kNumArgs = 6;
   if(argc != kNumArgs + 1) {
-    printf("Usage: %s <workload> <# threads> <zipfian constant> <# records> <# ops>\n", argv[0]);
+    printf("Usage: %s <workload> <# load threads> <# run threads> <zipfian constant> <# records> <# ops>\n", argv[0]);
     exit(0);
   }
 
   Workload workload = static_cast<Workload>(std::atol(argv[1]));
-  size_t num_threads = ::atol(argv[2]);
-  zipfian_constant_ = ::atof(argv[3]);
-  num_records_ = ::atol(argv[4]);
-  num_ops_ = ::atol(argv[5]);
+  size_t num_load_threads = ::atol(argv[2]);
+  size_t num_run_threads = ::atol(argv[3]);
+  zipfian_constant_ = ::atof(argv[4]);
+  num_records_ = ::atol(argv[5]);
+  num_ops_ = ::atol(argv[6]);
 
-  run(workload, num_threads);
+  run(workload, num_load_threads, num_run_threads);
 
   return 0;
 }
