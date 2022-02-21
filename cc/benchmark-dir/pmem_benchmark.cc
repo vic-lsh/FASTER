@@ -495,7 +495,7 @@ void run(Workload workload, size_t num_load_threads, size_t num_run_threads) {
   if (zipfian_constant_ > 0)
     init_zipfian_ctxt();
 
-  printf("Running benchmark on %" PRIu64 " threads...\n", num_threads);
+  printf("Running benchmark on %" PRIu64 " threads...\n", num_run_threads);
   switch(workload) {
   case Workload::A_50_50:
     run_benchmark<ycsb_a_50_50>(&store, num_run_threads);
