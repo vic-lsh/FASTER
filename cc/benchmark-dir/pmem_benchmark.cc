@@ -324,7 +324,7 @@ uint64_t next_zipfian(unsigned int *seedp) {
 }
 
 uint64_t next_uniform(unsigned int *seedp) {
-  uint64_t ret = (uint64_t) rand_r(seedp);
+  uint64_t ret = ((uint64_t) rand_r(seedp)) | (((uint64_t) rand_r(seedp)) << 32);
   ret = ret % num_records_;
   return index_to_key(ret);
 }
@@ -472,7 +472,7 @@ void run(Workload workload, size_t num_threads) {
 
   store.DumpDistribution();
 
-  printf("Configuring distribution\n");
+  printf("Configuring distribution...\n");
   if (zipfian_constant_ > 0)
     init_zipfian_ctxt();
 
