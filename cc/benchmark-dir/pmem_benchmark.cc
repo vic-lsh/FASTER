@@ -330,15 +330,16 @@ uint64_t next_uniform(unsigned int *seedp) {
   return index_to_key(ret);
 }
 
-void setup_store(store_t* store) {
+void thread_setup_store(store_t* store, size_t thread_idx, uint64_t start_idx, uint64_t end_idx) {
   auto callback = [](IAsyncContext* ctxt, Status result) {
     assert(result == Status::Ok);
   };
 
+  SetThreadAffinity(thread_idx);
   Guid guid = store->StartSession();
 
   uint64_t value = 42;  // arbitrary choice
-  for (uint64_t i = 0; i < num_records_; ++i) {
+  for (uint64_t i = start_idx; i < end_idx; ++i) {
     if(i % kRefreshInterval == 0) {
       store->Refresh();
       if(i % kCompletePendingInterval == 0) {
@@ -351,6 +352,23 @@ void setup_store(store_t* store) {
 
   store->CompletePending(true);
   store->StopSession();
+}
+
+void setup_store(store_t* store, size_t num_threads) {
+  auto callback = [](IAsyncContext* ctxt, Status result) {
+    assert(result == Status::Ok);
+  };
+
+  std::deque<std::thread> threads;
+  uint64_t num_records_per_thread = (num_records_ + num_threads - 1) / num_threads;
+  for(size_t thread_idx = 0; thread_idx < num_threads; ++thread_idx) {
+    threads.emplace_back(&thread_setup_store, store, thread_idx,
+                         thread_idx * num_records_per_thread,
+                         min((thread_idx + 1) * num_records_per_thread, num_records_));
+  }
+  for(auto& thread : threads) {
+    thread.join();
+  }
 
   printf("Finished populating store: contains %ld elements.\n", num_records_);
 }
@@ -469,7 +487,7 @@ void run(Workload workload, size_t num_threads) {
 
   printf("Populating the store...\n");
 
-  setup_store(&store);
+  setup_store(&store, num_threads);
 
   store.DumpDistribution();
 
