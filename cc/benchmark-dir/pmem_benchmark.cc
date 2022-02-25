@@ -307,8 +307,8 @@ void init_stupid_hash() {
 
 uint64_t stupid_hash(uint64_t value) {
   uint64_t hash = 0;
-  for (uint64_t i = 6; i >= 0; i--) {
-    hash |= stupid_hash_dict[i][(value >> i * 4) & 0xf];
+  for (uint64_t i = 0; i < 7; i++) {
+    hash |= stupid_hash_dict[6 - i][(value >> (6 - i) * 4) & 0xf];
     hash <<= 4;
   }
   return hash;
