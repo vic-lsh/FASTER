@@ -43,6 +43,8 @@ static_assert(kCompletePendingInterval % kRefreshInterval == 0,
 static constexpr uint64_t kNanosPerSecond = 1000000000;
 static constexpr uint64_t kMaxKey = 268435456;
 
+static uint8_t stupid_hash_dict[7][16];
+
 double zipfian_constant_;
 uint64_t num_records_;
 uint64_t num_ops_;
@@ -276,6 +278,7 @@ void SetThreadAffinity(size_t core) {
 }
 
 uint64_t fnv1_64_hash(uint64_t value) {
+  // Not used
   uint64_t hash = 14695981039346656037ul;
   uint8_t *p = (uint8_t *) &value;
   for (uint64_t i = 0; i < sizeof(uint64_t); ++i, ++p) {
@@ -285,8 +288,34 @@ uint64_t fnv1_64_hash(uint64_t value) {
   return hash;
 }
 
+void init_stupid_hash() {
+  unsigned int seed = 0xBEEF;
+  for (uint64_t i = 0; i < 7; i++) {
+    for (uint64_t j = 0; j < 16; j++) {
+      stupid_hash_dict[i][j] = j;
+    }
+    // Shuffle
+    for (uint64_t k = 0; k < 16 * 4; k++) {
+      int u = rand_r(&seed) % 16;
+      int v = rand_r(&seed) % 16;
+      uint64_t tmp = stupid_hash_dict[i][u];
+      stupid_hash_dict[i][u] = stupid_hash_dict[i][v];
+      stupid_hash_dict[i][v] = tmp;
+    }
+  }
+}
+
+uint64_t stupid_hash(uint64_t value) {
+  uint64_t hash = 0;
+  for (uint64_t i = 6; i >= 0; i--) {
+    hash |= stupid_hash_dict[(value >> i * 4) & 0xf];
+    hash <<= 4;
+  }
+  return hash;
+}
+
 uint64_t index_to_key(uint64_t index) {
-  return fnv1_64_hash(index) % kMaxKey;
+  return stupid_hash(index);
 }
 
 void init_zipfian_ctxt() {
@@ -354,6 +383,7 @@ void thread_setup_store(store_t* store, size_t thread_idx, uint64_t start_idx, u
 }
 
 void setup_store(store_t* store, size_t num_threads) {
+  init_stupid_hash();
   auto callback = [](IAsyncContext* ctxt, Status result) {
     assert(result == Status::Ok);
   };
