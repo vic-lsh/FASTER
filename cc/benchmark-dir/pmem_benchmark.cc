@@ -41,7 +41,6 @@ static_assert(kCompletePendingInterval % kRefreshInterval == 0,
               "kCompletePendingInterval % kRefreshInterval != 0");
 
 static constexpr uint64_t kNanosPerSecond = 1000000000;
-static constexpr uint64_t kMaxKey = 268435456;
 
 double zipfian_constant_;
 uint64_t num_records_;
@@ -286,7 +285,7 @@ uint64_t fnv1_64_hash(uint64_t value) {
 }
 
 uint64_t index_to_key(uint64_t index) {
-  return fnv1_64_hash(index) % kMaxKey;
+  return fnv1_64_hash(index);
 }
 
 void init_zipfian_ctxt() {
