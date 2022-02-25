@@ -326,15 +326,18 @@ class PersistentMemoryMalloc {
   }
 
   ~PersistentMemoryMalloc() {
+    FILE *fp;
+    fp = fopen("log_addr.txt", "w");
     if(pages_) {
       for(uint32_t idx = 0; idx < buffer_size_; ++idx) {
         if(pages_[idx]) {
-          printf("Log page virtual address: %ld\n", (uint64_t) pages_[idx]);
+          fprintf(fp, "%ld\n", (uint64_t) pages_[idx]);
           aligned_free(pages_[idx]);
         }
       }
       delete[] pages_;
     }
+    fclose(fp);
     if(page_status_) {
       delete[] page_status_;
     }
