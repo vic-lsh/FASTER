@@ -353,7 +353,7 @@ uint64_t next_zipfian(unsigned int *seedp) {
 }
 
 uint64_t next_uniform(unsigned int *seedp) {
-  uint64_t ret = ((uint64_t) rand_r(seedp)) | (((uint64_t) rand_r(seedp)) << 32);
+  uint64_t ret = (uint64_t) rand_r(seedp);
   ret = ret % num_records_;
   return index_to_key(ret);
 }
