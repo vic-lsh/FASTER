@@ -69,5 +69,25 @@ class Utility {
   }
 };
 
+uint64_t addr_translate(int fd, void *ptr) {
+	uint64_t virtual_addr = (uint64_t) ptr;
+	uint64_t virtual_pfn = virtual_addr / 4096;
+	size_t offset = virtual_pfn * sizeof(uint64_t);
+
+	/*
+	 * /proc/self/pagemap doc:
+	 * https://www.kernel.org/doc/Documentation/vm/pagemap.txt
+	 */
+	uint64_t page;
+	int ret = pread(fd, &page, 8, offset);
+	assert(ret == 8);
+	assert((page & 0x7fffffffffffffUL) != 0);
+
+	uint64_t physical_addr = ((page & 0x7fffffffffffffUL) * PAGE_SIZE)
+	                         + (virtual_addr % PAGE_SIZE);
+	assert((physical_addr % PAGE_SIZE) == (virtual_addr % PAGE_SIZE));
+	return physical_addr;
+};
+
 }
 } // namespace FASTER::core

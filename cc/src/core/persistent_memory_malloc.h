@@ -326,18 +326,26 @@ class PersistentMemoryMalloc {
   }
 
   ~PersistentMemoryMalloc() {
-    FILE *fp;
-    fp = fopen("log_addr.txt", "w");
+    FILE *fp = fopen("log_addr.txt", "w");
+    FILE *phys_fp = fopen("log_phys_addr.txt", "w");
+    int trans_fd = open("/proc/self/pagemap", O_RDONLY);
     if(pages_) {
       for(uint32_t idx = 0; idx < buffer_size_; ++idx) {
         if(pages_[idx]) {
           fprintf(fp, "%ld\n", (uint64_t) pages_[idx]);
+          uint64_t start_index = ((uint64_t) pages_[idx]) / 4096;
+          uint64_t end_index = (((uint64_t) pages_[idx]) + kPageSize + 4095) / 4096;
+          for (uint64_t page_index = start_index; page_index <= end_index; ++page_index) {
+            fprintf(phys_fp, "%ld\n", addr_translate(trans_fd, (void *) (4096 * page_index)));
+          }
           aligned_free(pages_[idx]);
         }
       }
       delete[] pages_;
     }
     fclose(fp);
+    fclose(phys_fp);
+    close(trans_fd);
     if(page_status_) {
       delete[] page_status_;
     }

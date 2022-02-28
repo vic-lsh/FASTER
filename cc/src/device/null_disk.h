@@ -49,8 +49,8 @@ class NullFile {
   }
 
   static size_t alignment() {
-    // Align null device to cache line.
-    return 64;
+    // Align null device to page.
+    return 4096;
   }
 
   void set_handler(NullHandler* handler) {
