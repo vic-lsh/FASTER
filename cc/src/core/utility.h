@@ -7,6 +7,8 @@
 #include <cstring>
 #include <stdexcept>
 #include <string>
+#include <fcntl.h>
+#include <unistd.h>
 
 namespace FASTER {
 namespace core {
