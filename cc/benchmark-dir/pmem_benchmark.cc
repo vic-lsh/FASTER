@@ -315,7 +315,7 @@ uint64_t stupid_hash(uint64_t value) {
 }
 
 uint64_t index_to_key(uint64_t index) {
-  return stupid_hash(index);
+  return stupid_hash(index) % num_record_;
 }
 
 void init_zipfian_ctxt() {
@@ -374,7 +374,7 @@ void thread_setup_store(store_t* store, size_t thread_idx, uint64_t start_idx, u
         store->CompletePending(false);
       }
     }
-    UpsertContext context{ index_to_key(i), value };
+    UpsertContext context{ i, value };
     store->Upsert(context, callback, 1);
   }
 
