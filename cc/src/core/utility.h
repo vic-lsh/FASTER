@@ -83,9 +83,9 @@ uint64_t addr_translate(int fd, void *ptr) {
 	assert(ret == 8);
 	assert((page & 0x7fffffffffffffUL) != 0);
 
-	uint64_t physical_addr = ((page & 0x7fffffffffffffUL) * PAGE_SIZE)
-	                         + (virtual_addr % PAGE_SIZE);
-	assert((physical_addr % PAGE_SIZE) == (virtual_addr % PAGE_SIZE));
+	uint64_t physical_addr = ((page & 0x7fffffffffffffUL) * 4096)
+	                         + (virtual_addr % 4096);
+	assert((physical_addr % 4096) == (virtual_addr % 4096));
 	return physical_addr;
 };
 
