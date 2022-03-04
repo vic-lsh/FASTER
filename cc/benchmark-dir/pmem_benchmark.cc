@@ -315,7 +315,7 @@ uint64_t stupid_hash(uint64_t value) {
 }
 
 uint64_t index_to_key(uint64_t index) {
-  return stupid_hash(index) % num_record_;
+  return stupid_hash(index) % num_records_;
 }
 
 void init_zipfian_ctxt() {
@@ -348,13 +348,13 @@ uint64_t next_zipfian(unsigned int *seedp) {
   } else {
     ret = (uint64_t) ((double)num_records_ * pow(zipfian_ctxt_.eta * u - zipfian_ctxt_.eta + 1, zipfian_ctxt_.alpha));
   }
-  ret = ret % num_records_;
+  ret = ret % kMaxKey;
   return index_to_key(ret);
 }
 
 uint64_t next_uniform(unsigned int *seedp) {
   uint64_t ret = (uint64_t) rand_r(seedp);
-  ret = ret % num_records_;
+  ret = ret % kMaxKey;
   return index_to_key(ret);
 }
 
