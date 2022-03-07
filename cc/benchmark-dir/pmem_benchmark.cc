@@ -358,6 +358,44 @@ uint64_t next_uniform(unsigned int *seedp) {
   return index_to_key(ret);
 }
 
+void thread_warmup_store(store_t* store, size_t thread_idx, uint64_t start_idx, uint64_t end_idx) {
+  auto callback = [](IAsyncContext* ctxt, Status result) {
+    CallbackContext<ReadContext> context{ ctxt };
+  };
+
+  SetThreadAffinity(thread_idx);
+  Guid guid = store->StartSession();
+
+  for (uint64_t i = start_idx; i < end_idx; ++i) {
+    if(i % kRefreshInterval == 0) {
+      store->Refresh();
+      if(i % kCompletePendingInterval == 0) {
+        store->CompletePending(false);
+      }
+    }
+    ReadContext context{ index_to_key(i) };
+    Status result = store->Read(context, callback, 1);
+  }
+
+  store->CompletePending(true);
+  store->StopSession();
+}
+
+void warmup_store(store_t* store, size_t num_threads) {
+  std::deque<std::thread> threads;
+  uint64_t num_records_per_thread = (num_records_ + num_threads - 1) / num_threads;
+  for(size_t thread_idx = 0; thread_idx < num_threads; ++thread_idx) {
+    threads.emplace_back(&thread_warmup_store, store, thread_idx,
+                         thread_idx * num_records_per_thread,
+                         std::min((thread_idx + 1) * num_records_per_thread, num_records_));
+  }
+  for(auto& thread : threads) {
+    thread.join();
+  }
+
+  printf("Finished warming-up store.\n");
+}
+
 void thread_setup_store(store_t* store, size_t thread_idx, uint64_t start_idx, uint64_t end_idx) {
   auto callback = [](IAsyncContext* ctxt, Status result) {
     assert(result == Status::Ok);
@@ -384,9 +422,6 @@ void thread_setup_store(store_t* store, size_t thread_idx, uint64_t start_idx, u
 
 void setup_store(store_t* store, size_t num_threads) {
   init_stupid_hash();
-  auto callback = [](IAsyncContext* ctxt, Status result) {
-    assert(result == Status::Ok);
-  };
 
   std::deque<std::thread> threads;
   uint64_t num_records_per_thread = (num_records_ + num_threads - 1) / num_threads;
@@ -517,6 +552,7 @@ void run(Workload workload, size_t num_load_threads, size_t num_run_threads) {
   printf("Populating the store...\n");
 
   setup_store(&store, num_load_threads);
+  warmup_store(&store, num_load_threads);
 
   store.DumpDistribution();
 
