@@ -90,6 +90,8 @@ uint64_t addr_translate(int fd, void *ptr) {
 	uint64_t page;
 	int ret = pread(fd, &page, 8, offset);
 	BUG_ON(ret != 8);
+  BUG_ON((page & (1UL << 63UL)) == 0);  // should present
+  BUG_ON((page & (1UL << 62UL)) != 0);  // shoud not be swapped
 	BUG_ON((page & 0x7fffffffffffffUL) == 0);
 
 	uint64_t physical_addr = ((page & 0x7fffffffffffffUL) * 4096)
