@@ -334,7 +334,7 @@ class PersistentMemoryMalloc {
         if(pages_[idx]) {
           fprintf(fp, "%ld\n", (uint64_t) pages_[idx]);
           uint64_t start_index = ((uint64_t) pages_[idx]) / 4096;
-          uint64_t end_index = (((uint64_t) pages_[idx]) + kPageSize + 4095) / 4096;
+          uint64_t end_index = (((uint64_t) pages_[idx]) + kPageSize - 1) / 4096;
           for (uint64_t page_index = start_index; page_index <= end_index; ++page_index) {
             fprintf(phys_fp, "%ld\n", addr_translate(trans_fd, (void *) (4096 * page_index)));
           }

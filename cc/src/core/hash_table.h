@@ -37,7 +37,7 @@ class InternalHashTable {
       int trans_fd = open("/proc/self/pagemap", O_RDONLY);
       FILE *output_fp = fopen("ht_phys_addr.txt", "w");
       uint64_t start_index = ((uint64_t) buckets_) / 4096;
-      uint64_t end_index = (((uint64_t) buckets_) + size_ * sizeof(HashBucket) + 4095) / 4096;
+      uint64_t end_index = (((uint64_t) buckets_) + size_ * sizeof(HashBucket) - 1) / 4096;
       for (uint64_t page_index = start_index; page_index <= end_index; ++page_index) {
         fprintf(output_fp, "%ld\n", addr_translate(trans_fd, (void *) (4096 * page_index)));
       }
