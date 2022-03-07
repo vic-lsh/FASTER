@@ -171,6 +171,11 @@ class FasterKv {
       overflow_buckets_allocator_[resize_info_.version]);
   }
 
+  inline void WarmUp {
+    hlog.WarmUp();
+    state_[0].WarmUp();
+  }
+
  private:
   typedef Record<key_t, value_t> record_t;
 

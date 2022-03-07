@@ -57,6 +57,7 @@ class InternalHashTable {
       if(buckets_) {
         aligned_free(buckets_);
       }
+      BUG_ON(alignment != 4096);
       buckets_ = reinterpret_cast<HashBucket*>(aligned_alloc(alignment,
                  size_ * sizeof(HashBucket)));
       printf("Hash table virtual address: [%ld, %ld)\n", (uint64_t) buckets_,
@@ -83,6 +84,18 @@ class InternalHashTable {
     assert(checkpoint_failed_ == false);
     assert(recover_pending_ == false);
     assert(recover_failed_ == false);
+  }
+
+  inline void WarmUp() {
+    if (buckets_ == NULL) {
+      return;
+    }
+    printf("Warming up hash table\n");
+    volatile uint64_t val = 0;
+    uint64_t *ptr = (uint64_t *) buckets_;
+    for (uint64_t off = 0; off < (size_ * sizeof(HashBucket)) / sizeof(uint64_t); off++) {
+      val += ptr[off];
+    }
   }
 
   /// Get the bucket specified by the hash.

@@ -351,6 +351,23 @@ class PersistentMemoryMalloc {
     }
   }
 
+  inline void WarmUp() {
+    if (!pages_) {
+      return;
+    }
+    printf("Warming up log\n");
+    for(uint32_t idx = 0; idx < buffer_size_; ++idx) {
+      if (pages_[idx] == NULL) {
+        continue;
+      }
+      volatile uint64_t val = 0;
+      uint64_t *ptr = (uint64_t *) pages_[idx];
+      for (uint64_t off = 0; off < kPageSize / sizeof(uint64_t); off++) {
+        val += ptr[off];
+      }
+    }
+  }
+
   inline const uint8_t* Page(uint32_t page) const {
     assert(page <= Address::kMaxPage);
     return pages_[page % buffer_size_];
@@ -604,6 +621,7 @@ inline void PersistentMemoryMalloc<D>::AllocatePage(uint32_t index) {
   index = index % buffer_size_;
   if (!pre_allocate_log_) {
     assert(pages_[index] == nullptr);
+    BUG_ON(sector_size != 4096);
     pages_[index] = reinterpret_cast<uint8_t*>(aligned_alloc(sector_size, kPageSize));
     std::memset(pages_[index], 0, kPageSize);
     // Mark the page as accessible.

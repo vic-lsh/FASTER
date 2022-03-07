@@ -552,7 +552,8 @@ void run(Workload workload, size_t num_load_threads, size_t num_run_threads) {
   printf("Populating the store...\n");
 
   setup_store(&store, num_load_threads);
-  warmup_store(&store, num_load_threads);
+  store.WarmUp();
+  // warmup_store(&store, num_load_threads);
 
   store.DumpDistribution();
 

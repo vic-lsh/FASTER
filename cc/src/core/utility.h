@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <cstdlib>
 #include <stdexcept>
 #include <string>
 #include <fcntl.h>
@@ -71,6 +72,12 @@ class Utility {
   }
 };
 
+inline void BUG_ON(bool cond) {
+  if (cond) {
+    abort();
+  }
+}
+
 uint64_t addr_translate(int fd, void *ptr) {
 	uint64_t virtual_addr = (uint64_t) ptr;
 	uint64_t virtual_pfn = virtual_addr / 4096;
@@ -82,8 +89,8 @@ uint64_t addr_translate(int fd, void *ptr) {
 	 */
 	uint64_t page;
 	int ret = pread(fd, &page, 8, offset);
-	assert(ret == 8);
-	assert((page & 0x7fffffffffffffUL) != 0);
+	BUG_ON(ret != 8);
+	BUG_ON((page & 0x7fffffffffffffUL) == 0);
 
 	uint64_t physical_addr = ((page & 0x7fffffffffffffUL) * 4096)
 	                         + (virtual_addr % 4096);
