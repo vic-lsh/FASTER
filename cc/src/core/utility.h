@@ -10,6 +10,7 @@
 #include <string>
 #include <fcntl.h>
 #include <unistd.h>
+#include <sys/mman.h>
 
 namespace FASTER {
 namespace core {
