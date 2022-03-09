@@ -43,7 +43,8 @@ class InternalHashTable {
       }
       fclose(output_fp);
       close(trans_fd);
-      aligned_free(buckets_);
+      // aligned_free(buckets_);
+      munmap(buckets_, size_ * sizeof(HashBucket));
     }
   }
 
@@ -53,13 +54,16 @@ class InternalHashTable {
     assert(Utility::IsPowerOfTwo(alignment));
     assert(alignment >= Constants::kCacheLineBytes);
     if(size_ != new_size) {
-      size_ = new_size;
       if(buckets_) {
-        aligned_free(buckets_);
+        // aligned_free(buckets_);
+        munmap(buckets_, size_ * sizeof(HashBucket));
       }
+      size_ = new_size;
       BUG_ON(alignment != 4096);
-      buckets_ = reinterpret_cast<HashBucket*>(aligned_alloc(alignment,
-                 size_ * sizeof(HashBucket)));
+      // buckets_ = reinterpret_cast<HashBucket*>(aligned_alloc(alignment,
+      //            size_ * sizeof(HashBucket)));
+      buckets_ = (HashBucket *) mmap(NULL, size_ * sizeof(HashBucket), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+      BUG_ON(buckets_ == MAP_FAILED);
       printf("Hash table virtual address: [%ld, %ld)\n", (uint64_t) buckets_,
              ((uint64_t) buckets_) + size_ * sizeof(HashBucket));
     }
@@ -74,7 +78,8 @@ class InternalHashTable {
 
   inline void Uninitialize() {
     if(buckets_) {
-      aligned_free(buckets_);
+      // aligned_free(buckets_);
+      munmap(buckets_, size_ * sizeof(HashBucket));
       buckets_ = nullptr;
     }
     size_ = 0;

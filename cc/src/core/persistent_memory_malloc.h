@@ -338,7 +338,8 @@ class PersistentMemoryMalloc {
           for (uint64_t page_index = start_index; page_index <= end_index; ++page_index) {
             fprintf(phys_fp, "%ld\n", addr_translate(trans_fd, (void *) (4096 * page_index)));
           }
-          aligned_free(pages_[idx]);
+          // aligned_free(pages_[idx]);
+          munmap(pages_[idx], kPageSize);
         }
       }
       delete[] pages_;
@@ -622,7 +623,9 @@ inline void PersistentMemoryMalloc<D>::AllocatePage(uint32_t index) {
   if (!pre_allocate_log_) {
     assert(pages_[index] == nullptr);
     BUG_ON(sector_size != 4096);
-    pages_[index] = reinterpret_cast<uint8_t*>(aligned_alloc(sector_size, kPageSize));
+    pages_[index] = (uint8_t *) mmap(NULL, kPageSize, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    BUG_ON(pages_[index] == MAP_FAILED);
+    // pages_[index] = reinterpret_cast<uint8_t*>(aligned_alloc(sector_size, kPageSize));
     std::memset(pages_[index], 0, kPageSize);
     // Mark the page as accessible.
     page_status_[index].status.store(FlushStatus::Flushed, CloseStatus::Open);
