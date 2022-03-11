@@ -59,11 +59,18 @@ class InternalHashTable {
         munmap(buckets_, size_ * sizeof(HashBucket));
       }
       size_ = new_size;
-      BUG_ON(alignment != 4096);
-      // buckets_ = reinterpret_cast<HashBucket*>(aligned_alloc(alignment,
-      //            size_ * sizeof(HashBucket)));
+      BUG_ON(alignment != 2097152);
+#ifdef USE_HEMEM
       buckets_ = (HashBucket *) mmap(NULL, size_ * sizeof(HashBucket), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
       BUG_ON(buckets_ == MAP_FAILED);
+#else
+      buckets_ = reinterpret_cast<HashBucket*>(aligned_alloc(alignment,
+                 size_ * sizeof(HashBucket)));
+#ifdef USE_THP
+      int ret = madvise(buckets_, size_ * sizeof(HashBucket), MADV_HUGEPAGE);
+      BUG_ON(ret != 0);
+#endif
+#endif
       printf("Hash table virtual address: [%ld, %ld)\n", (uint64_t) buckets_,
              ((uint64_t) buckets_) + size_ * sizeof(HashBucket));
     }
@@ -78,8 +85,11 @@ class InternalHashTable {
 
   inline void Uninitialize() {
     if(buckets_) {
-      // aligned_free(buckets_);
+#ifdef USE_HEMEM
       munmap(buckets_, size_ * sizeof(HashBucket));
+#else
+      aligned_free(buckets_);
+#endif
       buckets_ = nullptr;
     }
     size_ = 0;

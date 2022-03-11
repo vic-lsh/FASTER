@@ -49,8 +49,8 @@ class NullFile {
   }
 
   static size_t alignment() {
-    // Align null device to page.
-    return 4096;
+    // Align null device to huge page.
+    return 2097152;
   }
 
   void set_handler(NullHandler* handler) {
