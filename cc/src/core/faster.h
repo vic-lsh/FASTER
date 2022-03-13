@@ -36,9 +36,6 @@
 #include "log_scan.h"
 #include "compact.h"
 
-// #define USE_HEMEM
-// #define USE_THP
-
 using namespace std::chrono_literals;
 
 /// The FASTER key-value store, and related classes.

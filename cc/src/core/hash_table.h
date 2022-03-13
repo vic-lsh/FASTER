@@ -66,6 +66,7 @@ class InternalHashTable {
 #else
       buckets_ = reinterpret_cast<HashBucket*>(aligned_alloc(alignment,
                  size_ * sizeof(HashBucket)));
+      BUG_ON(buckets_ == NULL);
 #ifdef USE_THP
       int ret = madvise(buckets_, size_ * sizeof(HashBucket), MADV_HUGEPAGE);
       BUG_ON(ret != 0);
