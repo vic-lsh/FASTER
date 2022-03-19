@@ -353,8 +353,15 @@ uint64_t next_zipfian(unsigned int *seedp) {
 }
 
 uint64_t next_uniform(unsigned int *seedp) {
-  uint64_t ret = (uint64_t) rand_r(seedp);
-  ret = ret % num_records_;
+  static uint64_t max_group = (((uint64_t) RAND_MAX) + 1) / num_records_;
+  uint64_t ret;
+  while (true) {
+    ret = (uint64_t) rand_r(seedp);
+    if ((ret / num_records_) < max_group) {
+      ret = ret % num_records_;
+      break;
+    }
+  }
   return index_to_key(ret);
 }
 
