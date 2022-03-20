@@ -343,7 +343,7 @@ uint64_t next_zipfian(unsigned int *seedp) {
   uint64_t ret;
   if (uz < 1) {
     ret = 0;
-  } else if (uz < pow(0.5, zipfian_ctxt_.theta)) {
+  } else if (uz < 1 + pow(0.5, zipfian_ctxt_.theta)) {
     ret = 1;
   } else {
     ret = (uint64_t) ((double)num_records_ * pow(zipfian_ctxt_.eta * u - zipfian_ctxt_.eta + 1, zipfian_ctxt_.alpha));
