@@ -549,7 +549,7 @@ void run(Workload workload, size_t num_load_threads, size_t num_run_threads) {
   size_t init_size = next_power_of_two(num_records_ / 2);
   store_t store{
     /* hash table size */ init_size,
-    /* log size */ 17179869184,
+    /* log size */ 2199023255552UL,
     /* file name */ "",
   };
 
