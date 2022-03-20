@@ -357,7 +357,7 @@ uint64_t __attribute__((optimize("O0"))) next_uniform(unsigned int *seedp) {
   uint64_t ret;
   // trick to incur the same computation overhead as zipfian
   uint64_t volatile *retp = (uint64_t volatile *) &ret;
-  *ret = next_zipfian(seedp);
+  *retp = next_zipfian(seedp);
   ret = (uint64_t) (u * (num_records_ - 1));
   return index_to_key(ret);
 }
