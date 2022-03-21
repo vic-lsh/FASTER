@@ -94,19 +94,29 @@ class Key {
   uint64_t key_;
 };
 
-/// This benchmark stores an 8-byte value in the key-value store.
+_Static_assert(VALUE_SIZE % 8 == 0);
+_Static_assert(VALUE_SIZE != 0);
+#define VALUE_NUM_UINT64 (VALUE_SIZE / 8)
+
+/// This benchmark stores a fixed-size value in the key-value store.
 class Value {
  public:
-  Value()
-    : value_{ 0 } {
+  Value() {
+    for (uint64_t i = 0; i < VALUE_NUM_UINT64; ++i) {
+      value_[i] = 0;
+    }
   }
 
-  Value(const Value& other)
-    : value_{ other.value_ } {
+  Value(const Value& other) {
+    for (uint64_t i = 0; i < VALUE_NUM_UINT64; ++i) {
+      value_[i] = other.value_[i];
+    }
   }
 
-  Value(uint64_t value)
-    : value_{ value } {
+  Value(uint64_t value) {
+    for (uint64_t i = 0; i < VALUE_NUM_UINT64; ++i) {
+      value_[i] = value;
+    }
   }
 
   inline static constexpr uint32_t size() {
@@ -119,8 +129,8 @@ class Value {
 
  private:
   union {
-    uint64_t value_;
-    std::atomic<uint64_t> atomic_value_;
+    uint64_t value_[VALUE_NUM_UINT64];
+    std::atomic<uint64_t> atomic_value_[VALUE_NUM_UINT64];
   };
 };
 
@@ -185,10 +195,14 @@ class UpsertContext : public IAsyncContext {
 
   /// Non-atomic and atomic Put() methods.
   inline void Put(value_t& value) {
-    value.value_ = input_;
+    for (uint64_t i = 0; i < VALUE_NUM_UINT64; ++i) {
+      value.value_[i] = input_;
+    }
   }
   inline bool PutAtomic(value_t& value) {
-    value.atomic_value_.store(input_);
+    for (uint64_t i = 0; i < VALUE_NUM_UINT64; ++i) {
+      value.atomic_value_[i].store(input_);
+    }
     return true;
   }
 
@@ -233,13 +247,19 @@ class RmwContext : public IAsyncContext {
 
   /// Initial, non-atomic, and atomic RMW methods.
   inline void RmwInitial(value_t& value) {
-    value.value_ = incr_;
+    for (uint64_t i = 0; i < VALUE_NUM_UINT64; ++i) {
+      value.value_[i] = incr_;
+    }
   }
   inline void RmwCopy(const value_t& old_value, value_t& value) {
-    value.value_ = old_value.value_ + incr_;
+    for (uint64_t i = 0; i < VALUE_NUM_UINT64; ++i) {
+      value.value_[i] =  old_value.value_[i] + incr_;
+    }
   }
   inline bool RmwAtomic(value_t& value) {
-    value.atomic_value_.fetch_add(incr_);
+    for (uint64_t i = 0; i < VALUE_NUM_UINT64; ++i) {
+      value.atomic_value_[i].fetch_add(incr_);
+    }
     return true;
   }
 

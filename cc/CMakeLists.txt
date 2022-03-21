@@ -10,6 +10,8 @@ project(FASTER)
 # add_compile_definitions(USE_THP)
 # add_compile_definitions(USE_HEMEM)
 
+add_compile_definitions(VALUE_SIZE=8)
+
 # The set of additional options that we can pass into cmake. We currently support
 # a flag `USE_BLOBS` that will link in azure's blob store library so that FASTER
 # can be used with a blob device for the hybrid log.
