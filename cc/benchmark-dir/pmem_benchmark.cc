@@ -94,8 +94,6 @@ class Key {
   uint64_t key_;
 };
 
-_Static_assert(VALUE_SIZE % 8 == 0);
-_Static_assert(VALUE_SIZE != 0);
 #define VALUE_NUM_UINT64 (VALUE_SIZE / 8)
 
 /// This benchmark stores a fixed-size value in the key-value store.
