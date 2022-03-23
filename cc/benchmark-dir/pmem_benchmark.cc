@@ -278,7 +278,7 @@ class RmwContext : public IAsyncContext {
   inline bool RmwAtomic(value_t& value) {
     for (uint64_t i = 0; i < VALUE_NUM_UINT64; ++i) {
       // value.atomic_value_[i].fetch_add(incr_);
-      value.value_[i] =  old_value.value_[i] + incr_;
+      value.value_[i] += incr_;
     }
     return true;
   }
