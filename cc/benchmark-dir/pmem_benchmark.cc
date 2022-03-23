@@ -153,8 +153,24 @@ class ReadContext : public IAsyncContext {
   }
 
   // For this benchmark, we don't copy out, so these are no-ops.
-  inline void Get(const value_t& value) { }
-  inline void GetAtomic(const value_t& value) { }
+  inline void Get(const value_t& value) {
+    uint64_t volatile *p = (uint64_t volatile *) value_.value_;
+    for (uint64_t i = 0; i < VALUE_NUM_UINT64; ++i) {
+      p[i] = value.value_[i];
+    }
+  }
+
+  inline void GetAtomic(const value_t& value) {
+    if (VALUE_NUM_UINT64 == 1) {
+      uint64_t v = value.atomic_value_[0].load();
+      value_.atomic_value_[0].store(v);
+      return;
+    }
+    uint64_t volatile *p = (uint64_t volatile *) value_.value_;
+    for (uint64_t i = 0; i < VALUE_NUM_UINT64; ++i) {
+      p[i] = value.value_[i];
+    }
+  }
 
  protected:
   /// The explicit interface requires a DeepCopy_Internal() implementation.
@@ -164,6 +180,7 @@ class ReadContext : public IAsyncContext {
 
  private:
   Key key_;
+  Value value_;
 };
 
 /// Class passed to store_t::Upsert().
@@ -198,8 +215,12 @@ class UpsertContext : public IAsyncContext {
     }
   }
   inline bool PutAtomic(value_t& value) {
+    if (VALUE_NUM_UINT64 == 1) {
+      value.atomic_value_[0].store(input_);
+      return true;
+    }
     for (uint64_t i = 0; i < VALUE_NUM_UINT64; ++i) {
-      value.atomic_value_[i].store(input_);
+      value.value_[i] = input_;
     }
     return true;
   }
