@@ -7,7 +7,7 @@ enable_testing()
 include(ExternalProject)
 project(FASTER)
 
-# add_compile_definitions(USE_THP)
+add_compile_definitions(USE_THP)
 # add_compile_definitions(USE_HEMEM)
 
 add_compile_definitions(VALUE_SIZE=8)
