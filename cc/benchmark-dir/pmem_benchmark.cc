@@ -161,11 +161,11 @@ class ReadContext : public IAsyncContext {
   }
 
   inline void GetAtomic(const value_t& value) {
-    if (VALUE_NUM_UINT64 == 1) {
-      uint64_t v = value.atomic_value_[0].load();
-      value_.atomic_value_[0].store(v);
-      return;
-    }
+    // if (VALUE_NUM_UINT64 == 1) {
+    //   uint64_t v = value.atomic_value_[0].load();
+    //   value_.atomic_value_[0].store(v);
+    //   return;
+    // }
     uint64_t volatile *p = (uint64_t volatile *) value_.value_;
     for (uint64_t i = 0; i < VALUE_NUM_UINT64; ++i) {
       p[i] = value.value_[i];
@@ -215,10 +215,10 @@ class UpsertContext : public IAsyncContext {
     }
   }
   inline bool PutAtomic(value_t& value) {
-    if (VALUE_NUM_UINT64 == 1) {
-      value.atomic_value_[0].store(input_);
-      return true;
-    }
+    // if (VALUE_NUM_UINT64 == 1) {
+    //   value.atomic_value_[0].store(input_);
+    //   return true;
+    // }
     for (uint64_t i = 0; i < VALUE_NUM_UINT64; ++i) {
       value.value_[i] = input_;
     }
@@ -277,7 +277,8 @@ class RmwContext : public IAsyncContext {
   }
   inline bool RmwAtomic(value_t& value) {
     for (uint64_t i = 0; i < VALUE_NUM_UINT64; ++i) {
-      value.atomic_value_[i].fetch_add(incr_);
+      // value.atomic_value_[i].fetch_add(incr_);
+      value.value_[i] =  old_value.value_[i] + incr_;
     }
     return true;
   }
