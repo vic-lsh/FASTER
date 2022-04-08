@@ -716,7 +716,7 @@ int main(int argc, char* argv[]) {
   size_t kNumArgs = 6;
 #ifdef USE_OPT
   kNumArgs++;
-#else
+#endif
   if(argc != kNumArgs + 1) {
     printf("Usage: %s <workload> <# load threads> <# run threads> <zipfian constant> <# records> <# ops>", argv[0]);
 #ifdef USE_OPT
