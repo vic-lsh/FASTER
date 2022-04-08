@@ -695,7 +695,7 @@ inline void FasterKv<K, V, D>::GetAddr(RC& context, AsyncCallback callback,
 
   // FindEntry(hash, entry)
   uint32_t version = resize_info_.version;
-  *out_ht_addr = &state_[version].bucketAddr(hash);
+  *out_ht_addr = state_[version].bucketAddr(hash);
 
   HashBucketEntry entry;
   const AtomicHashBucketEntry* atomic_entry = FindEntry(hash, entry);
