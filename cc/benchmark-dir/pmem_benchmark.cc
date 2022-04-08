@@ -490,7 +490,7 @@ void setup_store(store_t* store, size_t num_threads) {
 
   uint64_t ht_size, log_size;
   store->GetMemorySize(&ht_size, &log_size);
-  printf("Hash table: %lld GB, log: %lld GB\n", ht_size >> 30UL, log_size >> 30UL);
+  printf("Hash table: %ld GB, log: %ld GB\n", ht_size >> 30UL, log_size >> 30UL);
 
   uint64_t ht_num_pages = (ht_size + OPT_PAGE_SIZE - 1) / OPT_PAGE_SIZE;
   uint64_t log_num_pages = (log_size + OPT_PAGE_SIZE - 1) / OPT_PAGE_SIZE;
@@ -531,13 +531,13 @@ void setup_store(store_t* store, size_t num_threads) {
       page_exp[ht_num_pages + j] += mass;
     }
     if (i % 100000 == 0) {
-      printf("Progress: %lld/%lld (%.2f%%)\r", i + 1, num_records_,
+      printf("Progress: %ld/%ld (%.2f%%)\r", i + 1, num_records_,
              ((double) (100 * (i + 1))) / (double) num_records_);
     }
   }
-  printf("Progress: %lld/%lld (100.00%%)\n", num_keys, num_keys);
+  printf("Progress: %ld/%ld (100.00%%)\n", num_records_, num_records_);
 
-  uint64_t page_index = (uint64_t *) malloc((ht_num_pages + log_num_pages) * sizeof(*page_index));
+  uint64_t *page_index = (uint64_t *) malloc((ht_num_pages + log_num_pages) * sizeof(*page_index));
   BUG_ON(page_index == NULL);
 
   std::iota(page_index, page_index + (ht_num_pages + log_num_pages), 0);
@@ -553,7 +553,7 @@ void setup_store(store_t* store, size_t num_threads) {
 
   uint64_t num_dram_pages = (dram_size_ << 30UL) / OPT_PAGE_SIZE;
   uint64_t num_pmem_pages = ht_num_pages + log_num_pages - num_dram_pages;
-  printf("Number of DRAM pages: %lld, number of PMEM pages: %lld\n",
+  printf("Number of DRAM pages: %ld, number of PMEM pages: %ld\n",
     num_dram_pages, num_pmem_pages);
 
   for (uint64_t i = 0; i < num_pmem_pages; ++i) {
