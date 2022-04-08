@@ -140,6 +140,18 @@ class FasterKv {
   template <class DC>
   inline Status Delete(DC& context, AsyncCallback callback, uint64_t monotonic_serial_num);
 
+  template <class RC>
+  inline void GetAddr(RC& context, AsyncCallback callback, uint64_t *out_ht_addr, uint64_t *out_log_addr);
+
+  inline void GetMemorySize(uint64_t *out_ht_size, uint64_t *out_log_size) {
+    *out_ht_size = state_[0].GetMemorySize();
+    *out_log_size = hlog.GetMemorySize();
+  }
+
+  inline uint64_t GetRecordSize(uint64_t key_size, uint64_t value_size) {
+    return record_t::size(key_size, value_size);
+  }
+
   inline bool CompletePending(bool wait = false);
 
   /// Checkpoint/recovery operations.
@@ -662,6 +674,36 @@ inline Status FasterKv<K, V, D>::Delete(DC& context, AsyncCallback callback,
   }
   thread_ctx().serial_num = monotonic_serial_num;
   return status;
+}
+
+template <class K, class V, class D>
+template <class RC>
+inline void FasterKv<K, V, D>::GetAddr(RC& context, AsyncCallback callback,
+                                       uint64_t *out_ht_addr,
+                                       uint64_t *out_log_addr) {
+  typedef RC read_context_t;
+  typedef PendingReadContext<RC> pending_read_context_t;
+  static_assert(std::is_base_of<value_t, typename read_context_t::value_t>::value,
+                "value_t is not a base class of read_context_t::value_t");
+  static_assert(alignof(value_t) == alignof(typename read_context_t::value_t),
+                "alignof(value_t) != alignof(typename read_context_t::value_t)");
+
+  pending_read_context_t pending_context{ context, callback };
+
+  // InternalRead(pending_context)
+  KeyHash hash = pending_context.get_key_hash();
+
+  // FindEntry(hash, entry)
+  uint32_t version = resize_info_.version;
+  *out_ht_addr = &state_[version].bucketAddr(hash);
+
+  HashBucketEntry entry;
+  const AtomicHashBucketEntry* atomic_entry = FindEntry(hash, entry);
+  BUG_ON(atomic_entry == nullptr);
+
+  Address address = entry.address();
+  Address begin_address = hlog.begin_address.load();
+  *out_log_addr = address.control() - begin_address.control();
 }
 
 template <class K, class V, class D>

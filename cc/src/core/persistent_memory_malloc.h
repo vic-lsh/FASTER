@@ -261,7 +261,8 @@ class PersistentMemoryMalloc {
     , buffer_size_{ 0 }
     , pages_{ nullptr }
     , page_status_{ nullptr }
-    , pre_allocate_log_{ pre_allocate_log } {
+    , pre_allocate_log_{ pre_allocate_log }
+    , num_allocated_pages_{ 0 } {
     assert(start_address.page() <= Address::kMaxPage);
 
     if(log_size % kPageSize != 0) {
@@ -392,6 +393,10 @@ class PersistentMemoryMalloc {
 
   inline uint32_t buffer_size() const {
     return buffer_size_;
+  }
+
+  inline uint64_t GetMemorySize() {
+    return num_allocated_pages_ * kPageSize;
   }
 
   /// Read the tail page + offset, atomically, and convert it to an address.
@@ -617,6 +622,8 @@ class PersistentMemoryMalloc {
   // Global address of the current tail (next element to be allocated from the circular buffer)
   AtomicPageOffset tail_page_offset_;
 
+  // Number of pages allocated
+  uint64_t num_allocated_pages_;
 };
 
 /// Implementations.
@@ -640,6 +647,7 @@ inline void PersistentMemoryMalloc<D>::AllocatePage(uint32_t index) {
     std::memset(pages_[index], 0, kPageSize);
     // Mark the page as accessible.
     page_status_[index].status.store(FlushStatus::Flushed, CloseStatus::Open);
+    num_allocated_pages_ = index + 1;
   }
 }
 

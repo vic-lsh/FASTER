@@ -9,6 +9,8 @@
 #include <cmath>
 #include <random>
 #include <string>
+#include <numeric>
+#include <algorithm>
 
 #include "file.h"
 
@@ -48,6 +50,9 @@ static uint8_t stupid_hash_dict[7][16];
 double zipfian_constant_;
 uint64_t num_records_;
 uint64_t num_ops_;
+#ifdef USE_OPT
+uint64_t dram_size_;  // GB
+#endif
 
 struct {
   double zetan;
@@ -318,7 +323,6 @@ void SetThreadAffinity(size_t core) {
 }
 
 uint64_t fnv1_64_hash(uint64_t value) {
-  // Not used
   uint64_t hash = 14695981039346656037ul;
   uint8_t *p = (uint8_t *) &value;
   for (uint64_t i = 0; i < sizeof(uint64_t); ++i, ++p) {
@@ -355,6 +359,7 @@ uint64_t stupid_hash(uint64_t value) {
 }
 
 uint64_t index_to_key(uint64_t index) {
+  // FIXME: does not have much effect; can be removed
   return stupid_hash(index);
 }
 
@@ -479,6 +484,94 @@ void setup_store(store_t* store, size_t num_threads) {
   }
 
   printf("Finished populating store: contains %ld elements.\n", num_records_);
+
+#ifdef USE_OPT
+  uint64_t record_size = store->GetRecordSize(8, VALUE_SIZE);
+
+  uint64_t ht_size, log_size;
+  store->GetMemorySize(&ht_size, &log_size);
+  printf("Hash table: %lld GB, log: %lld GB\n", ht_size >> 30UL, log_size >> 30UL);
+
+  uint64_t ht_num_pages = (ht_size + OPT_PAGE_SIZE - 1) / OPT_PAGE_SIZE;
+  uint64_t log_num_pages = (log_size + OPT_PAGE_SIZE - 1) / OPT_PAGE_SIZE;
+
+  double *page_exp = (double *) malloc((ht_num_pages + log_num_pages) * sizeof(*page_exp));
+  BUG_ON(page_exp == NULL);
+  memset(page_exp, 0, (ht_num_pages + log_num_pages) * sizeof(*page_exp));
+
+  printf("Calculating page-level distribution...\n");
+  auto callback = [](IAsyncContext* ctxt, Status result) {
+    CallbackContext<ReadContext> context{ ctxt };
+  };
+  for (uint64_t i = 0; i < num_records_; ++i) {
+    // From hotest to coldest
+    uint64_t key_index;
+    double mass;
+    // Don't need to normalize mass
+    if (zipfian_constant_ > 0) {
+      // Zipfian distribution
+      mass = 1.0L / pow((double) (i + 1), zipfian_constant_);
+      key_index = fnv1_64_hash(i) % num_records_;
+    } else {
+      // Uniform distribution
+      mass = 1.0L;
+      key_index = i;
+    }
+    ReadContext context{ index_to_key(key_index) };
+
+    uint64_t ht_addr, log_addr;
+    store->GetAddr(context, callback, &ht_addr, &log_addr);
+    uint64_t ht_page = ht_addr / OPT_PAGE_SIZE;
+    page_exp[ht_page] += mass;
+
+    for (uint64_t j = log_addr / OPT_PAGE_SIZE; 
+         j <= (log_addr + record_size - 1) / OPT_PAGE_SIZE;
+         ++j)
+    {
+      page_exp[ht_num_pages + j] += mass;
+    }
+    if (i % 100000 == 0) {
+      printf("Progress: %lld/%lld (%.2f%%)\r", i + 1, num_records_,
+             ((double) (100 * (i + 1))) / (double) num_records_);
+    }
+  }
+  printf("Progress: %lld/%lld (100.00%%)\n", num_keys, num_keys);
+
+  uint64_t page_index = (uint64_t *) malloc((ht_num_pages + log_num_pages) * sizeof(*page_index));
+  BUG_ON(page_index == NULL);
+
+  std::iota(page_index, page_index + (ht_num_pages + log_num_pages), 0);
+  std::stable_sort(page_index, page_index + (ht_num_pages + log_num_pages),
+    [&](const uint64_t &i, const uint64_t &j){return page_exp[i] < page_exp[j];});
+
+  BUG_ON(ht_num_pages + log_num_pages < 5);
+  printf("Top 5 unnormalized expected number of accesses:");
+  for (uint64_t i = 0; i < 5; ++i) {
+    printf(" %f", page_exp[page_index[ht_num_pages + log_num_pages - 1 - i]]);
+  }
+  printf("\n");
+
+  uint64_t num_dram_pages = (dram_size_ << 30UL) / OPT_PAGE_SIZE;
+  uint64_t num_pmem_pages = ht_num_pages + log_num_pages - num_dram_pages;
+  printf("Number of DRAM pages: %lld, number of PMEM pages: %lld\n",
+    num_dram_pages, num_pmem_pages);
+
+  for (uint64_t i = 0; i < num_pmem_pages; ++i) {
+    uint64_t cur_page_index = page_index[i];
+    if (cur_page_index < ht_num_pages) {
+      // Hash table page
+      // TODO: trigger migration
+    } else {
+      // Log page
+      cur_page_index -= ht_num_pages;
+      // TODO: trigger migration
+    }
+  }
+
+  free(page_index);
+  free(page_exp);
+  printf("Finished migrating pages.\n");
+#endif
 }
 
 template <Op(*FN)(std::mt19937&)>
@@ -620,18 +713,28 @@ void run(Workload workload, size_t num_load_threads, size_t num_run_threads) {
 }
 
 int main(int argc, char* argv[]) {
-  constexpr size_t kNumArgs = 6;
+  size_t kNumArgs = 6;
+#ifdef USE_OPT
+  kNumArgs++;
+#else
   if(argc != kNumArgs + 1) {
-    printf("Usage: %s <workload> <# load threads> <# run threads> <zipfian constant> <# records> <# ops>\n", argv[0]);
+    printf("Usage: %s <workload> <# load threads> <# run threads> <zipfian constant> <# records> <# ops>", argv[0]);
+#ifdef USE_OPT
+    printf(" <DRAM Size (GB)>");
+#endif
+    printf("\n");
     exit(0);
   }
 
   Workload workload = static_cast<Workload>(std::atol(argv[1]));
-  size_t num_load_threads = ::atol(argv[2]);
-  size_t num_run_threads = ::atol(argv[3]);
-  zipfian_constant_ = ::atof(argv[4]);
-  num_records_ = ::atol(argv[5]);
-  num_ops_ = ::atol(argv[6]);
+  size_t num_load_threads = std::atol(argv[2]);
+  size_t num_run_threads = std::atol(argv[3]);
+  zipfian_constant_ = std::atof(argv[4]);
+  num_records_ = std::atol(argv[5]);
+  num_ops_ = std::atol(argv[6]);
+#ifdef USE_OPT
+  dram_size_ = std::atol(argv[7]);
+#endif
 
   run(workload, num_load_threads, num_run_threads);
 

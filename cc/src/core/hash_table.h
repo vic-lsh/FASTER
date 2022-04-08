@@ -122,6 +122,14 @@ class InternalHashTable {
     return buckets_[hash.idx(size_)];
   }
 
+  inline uint64_t bucketAddr(KeyHash hash) {
+    return hash.idx(size_) * sizeof(HashBucket);
+  }
+
+  inline uint64_t GetMemorySize() {
+    return size_ * sizeof(HashBucket);
+  }
+
   /// Get the bucket specified by the index. (Used by checkpoint/recovery.)
   inline const HashBucket& bucket(uint64_t idx) const {
     assert(idx < size_);
