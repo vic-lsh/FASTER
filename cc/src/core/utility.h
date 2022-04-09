@@ -12,6 +12,7 @@
 #include <unistd.h>
 #include <sys/mman.h>
 #include <numaif.h>
+#include <numa.h>
 
 #define PAGE_SIZE 4096
 #define HUGE_PAGE_SIZE 2097152
