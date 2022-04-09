@@ -137,7 +137,7 @@ void numa_bind(void *addr, uint64_t size, uint64_t node) {
 
   numa_bitmask_setbit(nodes, node);
 
-  long mbind_ret = mbind(addr, size, MPOL_BIND, nodes->maskp, nodes->size + 1, MPOL_F_STATIC_NODES);
+  long mbind_ret = mbind(addr, size, MPOL_BIND, nodes->maskp, nodes->size + 1, 0);
   BUG_ON(mbind_ret != 0);
 
   numa_bitmask_free(nodes);

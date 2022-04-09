@@ -647,7 +647,7 @@ inline void PersistentMemoryMalloc<D>::AllocatePage(uint32_t index) {
     pages_[index] = (uint8_t *) mmap(NULL, kPageSize, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
     BUG_ON(pages_[index] == MAP_FAILED);
 #elif defined(USE_OPT)
-    pages_[index] = huge_mmap(kPageSize);
+    pages_[index] = (uint8_t *) huge_mmap(kPageSize);
     numa_bind(pages_[index], kPageSize, OPT_DRAM_NUMA);
 #else
     pages_[index] = reinterpret_cast<uint8_t*>(aligned_alloc(sector_size, kPageSize));
