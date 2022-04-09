@@ -117,7 +117,7 @@ uint64_t addr_translate(int fd, void *ptr) {
 
 void *huge_mmap(uint64_t size) {
   BUG_ON(size % HUGE_PAGE_SIZE != 0);
-  void *mmap_ret = mmap(NULL, size + HUGE_PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+  void *mmap_ret = mmap(NULL, size + HUGE_PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
   BUG_ON(mmap_ret == MAP_FAILED);
   return (void *) (((((uint64_t) mmap_ret) + HUGE_PAGE_SIZE - 1) / HUGE_PAGE_SIZE) * HUGE_PAGE_SIZE);
 }
@@ -158,7 +158,7 @@ void numa_remap(void *addr, uint64_t size, uint64_t node) {
   BUG_ON(ret != 0);
 
   // Re-mmap new pages
-  void *mmap_ret = mmap(addr, size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
+  void *mmap_ret = mmap(addr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
   BUG_ON(mmap_ret == MAP_FAILED);
 
   // Bind to new NUMA node
