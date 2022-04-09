@@ -560,17 +560,17 @@ void setup_store(store_t* store, size_t num_threads) {
     uint64_t cur_page_index = page_index[i];
     if (cur_page_index < ht_num_pages) {
       // Hash table page
-      // TODO: trigger migration
+      store->MigrateHashTable(cur_page_index * OPT_PAGE_SIZE, OPT_PAGE_SIZE, OPT_PMEM_NUMA);
     } else {
       // Log page
       cur_page_index -= ht_num_pages;
-      // TODO: trigger migration
+      store->MigrateLog(cur_page_index * OPT_PAGE_SIZE, OPT_PAGE_SIZE, OPT_PMEM_NUMA);
     }
   }
 
   free(page_index);
   free(page_exp);
-  printf("Finished migrating pages.\n");
+  printf("Finished migrating pages\n");
 #endif
 }
 

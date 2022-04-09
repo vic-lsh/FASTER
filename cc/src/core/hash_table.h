@@ -59,18 +59,21 @@ class InternalHashTable {
         munmap(buckets_, size_ * sizeof(HashBucket));
       }
       size_ = new_size;
-      BUG_ON(alignment != 2097152);
+      BUG_ON(alignment != HUGE_PAGE_SIZE);
 #ifdef USE_HEMEM
       buckets_ = (HashBucket *) mmap(NULL, size_ * sizeof(HashBucket), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
       BUG_ON(buckets_ == MAP_FAILED);
+#elif defined(USE_OPT)
+      buckets_ = (HashBucket *) huge_mmap(size_ * sizeof(HashBucket));
+      numa_bind(buckets_, size_ * sizeof(HashBucket), OPT_DRAM_NUMA);
 #else
       buckets_ = reinterpret_cast<HashBucket*>(aligned_alloc(alignment,
                  size_ * sizeof(HashBucket)));
       BUG_ON(buckets_ == NULL);
-#ifdef USE_THP
-      int ret = madvise(buckets_, size_ * sizeof(HashBucket), MADV_HUGEPAGE);
-      BUG_ON(ret != 0);
 #endif
+
+#if defined(USE_THP) || defined(OPT_HUGE_PAGE)
+      huge_madvise(buckets_, size_ * sizeof(HashBucket));
 #endif
       printf("Hash table virtual address: [%ld, %ld)\n", (uint64_t) buckets_,
              ((uint64_t) buckets_) + size_ * sizeof(HashBucket));
@@ -86,7 +89,7 @@ class InternalHashTable {
 
   inline void Uninitialize() {
     if(buckets_) {
-#ifdef USE_HEMEM
+#if defined(USE_HEMEM) || defined(USE_OPT)
       munmap(buckets_, size_ * sizeof(HashBucket));
 #else
       aligned_free(buckets_);
@@ -128,6 +131,14 @@ class InternalHashTable {
 
   inline uint64_t GetMemorySize() {
     return size_ * sizeof(HashBucket);
+  }
+
+  inline void Migrate(uint64_t offset, uint64_t size, uint64_t node) {
+    BUG_ON(offset % PAGE_SIZE != 0);
+    BUG_ON(offset % OPT_PAGE_SIZE != 0);
+
+    uint64_t addr = ((uint64_t) buckets_) + offset;
+    numa_remap((void *) addr, size, node);
   }
 
   /// Get the bucket specified by the index. (Used by checkpoint/recovery.)

@@ -152,6 +152,15 @@ class FasterKv {
     return record_t::size(key_size, value_size);
   }
 
+  inline void MigrateHashTable(uint64_t offset, uint64_t size, uint64_t node) {
+    uint32_t version = resize_info_.version;
+    state_[version].Migrate(offset, size, node);
+  }
+
+  inline void MigrateLog(uint64_t offset, uint64_t size, uint64_t node) {
+    hlog.Migrate(offset, size, node);
+  }
+
   inline bool CompletePending(bool wait = false);
 
   /// Checkpoint/recovery operations.

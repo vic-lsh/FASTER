@@ -339,7 +339,7 @@ class PersistentMemoryMalloc {
           for (uint64_t page_index = start_index; page_index <= end_index; ++page_index) {
             fprintf(phys_fp, "%ld\n", addr_translate(trans_fd, (void *) (4096 * page_index)));
           }
-#ifdef USE_HEMEM
+#if defined(USE_HEMEM) || defined(USE_OPT)
           munmap(pages_[idx], kPageSize);
 #else
           aligned_free(pages_[idx]);
@@ -397,6 +397,16 @@ class PersistentMemoryMalloc {
 
   inline uint64_t GetMemorySize() {
     return num_allocated_pages_ * kPageSize;
+  }
+
+  inline void Migrate(uint64_t offset, uint64_t size, uint64_t node) {
+    BUG_ON(offset % PAGE_SIZE != 0);
+    BUG_ON(offset % OPT_PAGE_SIZE != 0);
+
+    uint64_t page_index = offset / kPageSize;
+    uint64_t page_offset = offset % kPageSize;
+    uint64_t addr = ((uint64_t) pages_[page_index]) + page_offset;
+    numa_remap((void *) addr, size, node);
   }
 
   /// Read the tail page + offset, atomically, and convert it to an address.
@@ -632,17 +642,20 @@ inline void PersistentMemoryMalloc<D>::AllocatePage(uint32_t index) {
   index = index % buffer_size_;
   if (!pre_allocate_log_) {
     assert(pages_[index] == nullptr);
-    BUG_ON(sector_size != 2097152);
+    BUG_ON(sector_size != HUGE_PAGE_SIZE);
 #ifdef USE_HEMEM
     pages_[index] = (uint8_t *) mmap(NULL, kPageSize, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
     BUG_ON(pages_[index] == MAP_FAILED);
+#elif defined(USE_OPT)
+    pages_[index] = huge_mmap(kPageSize);
+    numa_bind(pages_[index], kPageSize, OPT_DRAM_NUMA);
 #else
     pages_[index] = reinterpret_cast<uint8_t*>(aligned_alloc(sector_size, kPageSize));
     BUG_ON(pages_[index] == NULL);
-#ifdef USE_THP
-    int ret = madvise(pages_[index], kPageSize, MADV_HUGEPAGE);
-    BUG_ON(ret != 0);
 #endif
+
+#if defined(USE_THP) || defined(OPT_HUGE_PAGE)
+    huge_madvise(pages_[index], kPageSize);
 #endif
     std::memset(pages_[index], 0, kPageSize);
     // Mark the page as accessible.

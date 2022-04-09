@@ -82,6 +82,7 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 
 set (FASTER_LINK_LIBS
   faster
+  numa
 )
 
 # Set the link libraries to for test compilation

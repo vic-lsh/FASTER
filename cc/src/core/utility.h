@@ -11,6 +11,19 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/mman.h>
+#include <numaif.h>
+
+#define PAGE_SIZE 4096
+#define HUGE_PAGE_SIZE 2097152
+
+#if defined(USE_OPT) && ((OPT_PAGE_SIZE) == (HUGE_PAGE_SIZE))
+#define OPT_HUGE_PAGE
+#endif
+
+#ifdef USE_OPT
+#define OPT_DRAM_NUMA 0
+#define OPT_PMEM_NUMA 2
+#endif
 
 namespace FASTER {
 namespace core {
@@ -100,6 +113,66 @@ uint64_t addr_translate(int fd, void *ptr) {
 	assert((physical_addr % 4096) == (virtual_addr % 4096));
 	return physical_addr;
 };
+
+void *huge_mmap(uint64_t size) {
+  BUG_ON(size % HUGE_PAGE_SIZE != 0);
+  void *mmap_ret = mmap(NULL, size + HUGE_PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+  BUG_ON(mmap_ret == MAP_FAILED);
+  return (void *) (((((uint64_t) mmap_ret) + HUGE_PAGE_SIZE - 1) / HUGE_PAGE_SIZE) * HUGE_PAGE_SIZE);
+}
+
+void huge_madvise(void *addr, uint64_t size) {
+  int ret = madvise(addr, size, MADV_HUGEPAGE);
+  BUG_ON(ret != 0);
+}
+
+void numa_bind(void *addr, uint64_t size, uint64_t node) {
+  BUG_ON(((uint64_t) addr) % PAGE_SIZE != 0);
+  BUG_ON(size % PAGE_SIZE != 0);
+
+  struct bitmask *nodes;
+  nodes = numa_allocate_nodemask();
+  BUG_ON(nodes == NULL);
+
+  numa_bitmask_setbit(nodes, node);
+
+  long mbind_ret = mbind(addr, size, MPOL_BIND, nodes->maskp, nodes->size + 1, MPOL_F_STATIC_NODES);
+  BUG_ON(mbind_ret != 0);
+
+  numa_bitmask_free(nodes);
+}
+
+void numa_remap(void *addr, uint64_t size, uint64_t node) {
+  BUG_ON(((uint64_t) addr) % PAGE_SIZE != 0);
+  BUG_ON(size % PAGE_SIZE != 0);
+  BUG_ON(((uint64_t) addr) % OPT_PAGE_SIZE != 0);
+  BUG_ON(size % OPT_PAGE_SIZE != 0);
+
+  // Copy data into a tmp buffer
+  uint8_t *tmp_buf = (uint8_t *) aligned_alloc(OPT_PAGE_SIZE, size);
+  memcpy(tmp_buf, addr, size);
+
+  // Unmap existing pages
+  int ret = munmap(addr, size);
+  BUG_ON(ret != 0);
+
+  // Re-mmap new pages
+  void *mmap_ret = mmap(addr, size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
+  BUG_ON(mmap_ret == MAP_FAILED);
+
+  // Bind to new NUMA node
+  numa_bind(addr, size, node);
+
+#ifdef OPT_HUGE_PAGE
+  // Re-madvise THP
+  huge_madvise(addr, size);
+#endif
+
+  // Copy data into the new pages
+  memcpy(addr, tmp_buf, size);
+
+  aligned_free(tmp_buf);
+}
 
 }
 } // namespace FASTER::core
