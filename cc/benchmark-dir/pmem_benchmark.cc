@@ -552,6 +552,9 @@ void setup_store(store_t* store, size_t num_threads) {
   printf("\n");
 
   uint64_t num_dram_pages = (dram_size_ << 30UL) / OPT_PAGE_SIZE;
+  if (num_dram_pages > ht_num_pages + log_num_pages) {
+    num_dram_pages = ht_num_pages + log_num_pages;
+  }
   uint64_t num_pmem_pages = ht_num_pages + log_num_pages - num_dram_pages;
   printf("Number of DRAM pages: %ld, number of PMEM pages: %ld\n",
     num_dram_pages, num_pmem_pages);
