@@ -11,7 +11,7 @@ add_compile_definitions(USE_THP)
 # add_compile_definitions(USE_OPT)
 # add_compile_definitions(USE_HEMEM)
 
-add_compile_definitions(VALUE_SIZE=8)
+add_compile_definitions(VALUE_SIZE=192)
 add_compile_definitions(OPT_PAGE_SIZE=2097152)
 
 # The set of additional options that we can pass into cmake. We currently support
