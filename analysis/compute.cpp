@@ -6,6 +6,9 @@
 #include <cstdint>
 #include <cmath>
 #include <cstdlib>
+#include <algorithm>
+
+#define CACHELINE_SIZE 64
 
 using namespace std;
 
@@ -58,7 +61,6 @@ uint64_t get_record_size(uint64_t key_size, uint64_t value_size)
  * + Hash buckets never overflow
  * + Treat multiple consecutive accesses in one cacheline as one access
  * + Only consider major memory accesses in the lookup/update path
- * + Does not consider CPU cache
  */
 
 void run(uint64_t   num_keys,
@@ -66,6 +68,7 @@ void run(uint64_t   num_keys,
          uint64_t   key_size,
          uint64_t   value_size,
          uint64_t   page_size,
+         uint64_t   cpu_cache_size,
          unsigned   seed,
          double   **out_ht_exp,
          uint64_t  *out_ht_num_pages,
@@ -76,7 +79,8 @@ void run(uint64_t   num_keys,
     uint64_t record_size = get_record_size(key_size, value_size);
 
     // Each bucket is 64 B
-    uint64_t hash_table_size = num_buckets * 64;
+    uint64_t hash_bucket_size = 64;
+    uint64_t hash_table_size = num_buckets * hash_bucket_size;
 
     uint64_t log_size = 0;
     uint64_t *log_mapping = (uint64_t *) malloc(num_keys * sizeof(*log_mapping));
@@ -109,29 +113,41 @@ void run(uint64_t   num_keys,
     }
     fprintf(stderr, "\tProgress: %lld/%lld (100.00%%)\n", num_keys, num_keys);
 
+    const uint64_t lines_per_page = page_size / CACHELINE_SIZE;
+
+    uint64_t hash_table_num_lines = (hash_table_size + CACHELINE_SIZE - 1) / CACHELINE_SIZE;
+    double *ht_exp_line = (double *) malloc(hash_table_num_lines * sizeof(*ht_exp_line));
+    BUG_ON(ht_exp_line == NULL);
+    memset(ht_exp_line, 0, hash_table_num_lines * sizeof(*ht_exp_line));
+
     uint64_t hash_table_num_pages = (hash_table_size + page_size - 1) / page_size;
     *out_ht_exp = (double *) malloc(hash_table_num_pages * sizeof(**out_ht_exp));
     BUG_ON(*out_ht_exp == NULL);
     memset(*out_ht_exp, 0, hash_table_num_pages * sizeof(**out_ht_exp));
+
+    uint64_t log_num_lines = (log_size + CACHELINE_SIZE - 1) / CACHELINE_SIZE;
+    double *log_exp_line = (double *) malloc(log_num_lines * sizeof(*log_exp_line));
+    BUG_ON(log_exp_line == NULL);
+    memset(log_exp_line, 0, log_num_lines * sizeof(*log_exp_line));
 
     uint64_t log_num_pages = (log_size + page_size - 1) / page_size;
     *out_log_exp = (double *) malloc(log_num_pages * sizeof(**out_log_exp));
     BUG_ON(*out_log_exp == NULL);
     memset(*out_log_exp, 0, log_num_pages * sizeof(**out_log_exp));
 
-    fprintf(stderr, "Calculating page-level distribution...\n");
+    fprintf(stderr, "Calculating cacheline-level distribution...\n");
     for (uint64_t i = 0; i < num_keys; ++i) {
         double obj_pm = obj_pmf[i];
         uint64_t hash_bucket = key_hash(i) % num_buckets;
-        uint64_t hash_table_page = (hash_bucket * 64) / page_size;
-        (*out_ht_exp)[hash_table_page] += obj_pm;
+        uint64_t hash_table_line = (hash_bucket * hash_bucket_size) / CACHELINE_SIZE;
+        ht_exp_line[hash_table_line] += obj_pm;
 
         uint64_t log_addr = log_mapping[i];
-        for (uint64_t j = log_addr / page_size;
-             j <= (log_addr + record_size - 1) / page_size;
+        for (uint64_t j = log_addr / CACHELINE_SIZE;
+             j <= (log_addr + record_size - 1) / CACHELINE_SIZE;
              ++j)
         {
-            (*out_log_exp)[j] += obj_pm;
+            log_exp_line[j] += obj_pm;
         }
         if (i % 100000 == 0) {
             fprintf(stderr, "\tProgress: %lld/%lld (%.2f%%)\r", i + 1, num_keys,
@@ -139,42 +155,78 @@ void run(uint64_t   num_keys,
         }
     }
     fprintf(stderr, "\tProgress: %lld/%lld (100.00%%)\n", num_keys, num_keys);
+
+    fprintf(stderr, "Simulating CPU cache...\n");
+    uint64_t *line_index_arr = (uint64_t *) malloc((hash_table_num_lines + log_num_lines) * sizeof(*line_index_arr));
+    BUG_ON(line_index_arr == NULL);
+    iota(line_index_arr, line_index_arr + (hash_table_num_lines + log_num_lines), 0);
+    stable_sort(line_index_arr, line_index_arr + (hash_table_num_lines + log_num_lines),
+    [&](const uint64_t &i, const uint64_t &j){
+        double val_i, val_j;
+        if (i >= hash_table_num_lines) {
+            val_i = log_exp_line[i - hash_table_num_lines];
+        } else {
+            val_i = ht_exp_line[i];
+        }
+        if (j >= hash_table_num_lines) {
+            val_j = log_exp_line[j - hash_table_num_lines];
+        } else {
+            val_j = ht_exp_line[j];
+        }
+        return val_i < val_j;
+    });
+    for (uint64_t i = 0; i < cpu_cache_size / CACHELINE_SIZE; ++i) {
+        uint64_t line_index = line_index_arr[hash_table_num_lines + log_num_lines - i - 1];
+        if (line_index >= hash_table_num_lines) {
+            log_exp_line[line_index - hash_table_num_lines] = 0;
+        } else {
+            ht_exp_line[line_index] = 0;
+        }
+    }
+
+    fprintf(stderr, "Calculating page-level distribution...\n");
+    for (uint64_t i = 0; i < hash_table_num_lines; ++i) {
+        (*out_ht_exp)[i / lines_per_page] += ht_exp_line[i];
+    }
+    for (uint64_t i = 0; i < log_num_lines; ++i) {
+        (*out_log_exp)[i / lines_per_page] += log_exp_line[i];
+    }
+
     *out_ht_num_pages = hash_table_num_pages;
     *out_log_num_pages = log_num_pages;
 
+    free(line_index_arr);
+    free(ht_exp_line);
+    free(log_exp_line);
     free(obj_load_idx);
     free(log_mapping);
 }
 
 int main(int argc, char *argv[])
 {
-    if (argc != 6) {
-        fprintf(stderr, "Usage: %s <num_keys> <key_size> <value_size> <page_size> <a>\n", argv[0]);
+    if (argc != 7) {
+        fprintf(stderr, "Usage: %s <num_keys> <key_size> <value_size> <page_size> <cpu cache size> <a>\n", argv[0]);
         exit(1);
     }
     uint64_t num_keys = atol(argv[1]);
     uint64_t key_size = atol(argv[2]);
     uint64_t value_size = atol(argv[3]);
     uint64_t page_size = atol(argv[4]);
+    uint64_t cpu_cache_size = atol(argv[5]);
     unsigned pmf_seed = 0xBAD;
     unsigned seed = 0xBEEF;
-    double a = atof(argv[5]);
+    double a = atof(argv[6]);
 
     double *obj_pmf = (double *) malloc(num_keys * sizeof(*obj_pmf));
     BUG_ON(obj_pmf == NULL);
-    double sum = 0;
     for (uint64_t i = 0; i < num_keys; ++i) {
         if (a == 0) {
             obj_pmf[i] = 1.0L / ((double) num_keys);
         } else {
             obj_pmf[i] = 1.0L / pow((double) (i + 1), (double) a);
-            sum += obj_pmf[i];
         }
     }
     if (a != 0) {
-        for (uint64_t i = 0; i < num_keys; ++i) {
-            obj_pmf[i] = obj_pmf[i] / sum;
-        }
         std::shuffle(obj_pmf, obj_pmf + num_keys, std::default_random_engine(pmf_seed));
     }
 
@@ -182,7 +234,7 @@ int main(int argc, char *argv[])
     uint64_t out_ht_num_pages;
     double *out_log_exp = NULL;
     uint64_t out_log_num_pages;
-    run(num_keys, obj_pmf, key_size, value_size, page_size, seed,
+    run(num_keys, obj_pmf, key_size, value_size, page_size, cpu_cache_size, seed,
         &out_ht_exp, &out_ht_num_pages, &out_log_exp, &out_log_num_pages);
     BUG_ON(out_ht_exp == NULL);
     BUG_ON(out_log_exp == NULL);
