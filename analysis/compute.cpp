@@ -73,7 +73,8 @@ void run(uint64_t   num_keys,
          double   **out_ht_exp,
          uint64_t  *out_ht_num_pages,
          double   **out_log_exp,
-         uint64_t  *out_log_num_pages)
+         uint64_t  *out_log_num_pages,
+         double    *out_cache_exp)
 {
     uint64_t num_buckets = 1UL << ((uint64_t) ceil(log2(num_keys / 2)));
     uint64_t record_size = get_record_size(key_size, value_size);
@@ -175,11 +176,14 @@ void run(uint64_t   num_keys,
         }
         return val_i < val_j;
     });
+    *out_cache_exp = 0;
     for (uint64_t i = 0; i < cpu_cache_size / CACHELINE_SIZE; ++i) {
         uint64_t line_index = line_index_arr[hash_table_num_lines + log_num_lines - i - 1];
         if (line_index >= hash_table_num_lines) {
+            *out_cache_exp += log_exp_line[line_index - hash_table_num_lines];
             log_exp_line[line_index - hash_table_num_lines] = 0;
         } else {
+            *out_cache_exp += ht_exp_line[line_index];
             ht_exp_line[line_index] = 0;
         }
     }
@@ -204,8 +208,8 @@ void run(uint64_t   num_keys,
 
 int main(int argc, char *argv[])
 {
-    if (argc != 7) {
-        fprintf(stderr, "Usage: %s <num_keys> <key_size> <value_size> <page_size> <cpu cache size> <a>\n", argv[0]);
+    if (argc != 8) {
+        fprintf(stderr, "Usage: %s <num_keys> <key_size> <value_size> <page_size> <cpu_cache_size> <a> <size_gap>\n", argv[0]);
         exit(1);
     }
     uint64_t num_keys = atol(argv[1]);
@@ -216,6 +220,8 @@ int main(int argc, char *argv[])
     unsigned pmf_seed = 0xBAD;
     unsigned seed = 0xBEEF;
     double a = atof(argv[6]);
+    uint64_t size_gap = atol(argv[7]);
+    BUG_ON(size_gap % page_size != 0);
 
     double *obj_pmf = (double *) malloc(num_keys * sizeof(*obj_pmf));
     BUG_ON(obj_pmf == NULL);
@@ -234,20 +240,60 @@ int main(int argc, char *argv[])
     uint64_t out_ht_num_pages;
     double *out_log_exp = NULL;
     uint64_t out_log_num_pages;
+    double out_cache_exp;
     run(num_keys, obj_pmf, key_size, value_size, page_size, cpu_cache_size, seed,
-        &out_ht_exp, &out_ht_num_pages, &out_log_exp, &out_log_num_pages);
+        &out_ht_exp, &out_ht_num_pages, &out_log_exp, &out_log_num_pages,
+        &out_cache_exp);
     BUG_ON(out_ht_exp == NULL);
     BUG_ON(out_log_exp == NULL);
 
-    printf("%lld\n", out_ht_num_pages);
-    printf("%lld\n", out_log_num_pages);
+    uint64_t *index_arr = (uint64_t *) malloc((out_ht_num_pages + out_log_num_pages) * sizeof(*index_arr));
+    BUG_ON(index_arr == NULL);
+    iota(index_arr, index_arr + (out_ht_num_pages + out_log_num_pages), 0);
+    stable_sort(index_arr, index_arr + (out_ht_num_pages + out_log_num_pages),
+    [&](const uint64_t &i, const uint64_t &j){
+        double val_i, val_j;
+        if (i >= out_ht_num_pages) {
+            val_i = out_log_exp[i - out_ht_num_pages];
+        } else {
+            val_i = out_ht_exp[i];
+        }
+        if (j >= out_ht_num_pages) {
+            val_j = out_log_exp[j - out_ht_num_pages];
+        } else {
+            val_j = out_ht_exp[j];
+        }
+        return val_i < val_j;
+    });
+
+    double sum = 0;
     for (uint64_t i = 0; i < out_ht_num_pages; ++i) {
-        printf("%.32f\n", out_ht_exp[i]);
+        sum += out_ht_exp[i];
     }
     for (uint64_t i = 0; i < out_log_num_pages; ++i) {
-        printf("%.32f\n", out_log_exp[i]);
+        sum += out_log_exp[i];
+    }
+    sum += out_cache_exp;
+
+    double cumsum = 0;
+    uint64_t target_size = size_gap;
+    for (uint64_t i = 0; i < out_ht_num_pages + out_log_num_pages; ++i) {
+        uint64_t index = index_arr[i];
+        double value;
+        if (index >= out_ht_num_pages) {
+            value = out_log_exp[index - out_ht_num_pages];
+        } else {
+            value = out_ht_exp[index];
+        }
+        cumsum += value;
+
+        if ((i + 1) * page_size >= target_size) {
+            printf("%lld,%.32f\n", (out_ht_num_pages + out_log_num_pages - (i + 1)) * page_size, cumsum / sum);
+            target_size += size_gap;
+        }
     }
 
+    free(index_arr);
     free(out_ht_exp);
     free(out_log_exp);
     free(obj_pmf);
