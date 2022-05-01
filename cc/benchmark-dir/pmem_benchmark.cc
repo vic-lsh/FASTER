@@ -34,6 +34,7 @@ enum class Op : uint8_t {
 enum class Workload {
   A_50_50 = 0,
   RMW_100 = 1,
+  C_100 = 2,
 };
 
 static constexpr uint64_t kRefreshInterval = 64;
@@ -313,6 +314,10 @@ inline Op ycsb_a_50_50(std::mt19937& rng) {
 
 inline Op ycsb_rmw_100(std::mt19937& rng) {
   return Op::ReadModifyWrite;
+}
+
+inline Op ycsb_c_100(std::mt19937& rng) {
+  return Op::Read;
 }
 
 void SetThreadAffinity(size_t core) {
@@ -708,6 +713,9 @@ void run(Workload workload, size_t num_load_threads, size_t num_run_threads) {
     break;
   case Workload::RMW_100:
     run_benchmark<ycsb_rmw_100>(&store, num_run_threads);
+    break;
+  case Workload::C_100:
+    run_benchmark<ycsb_c_100>(&store, num_run_threads);
     break;
   default:
     printf("Unknown workload!\n");
