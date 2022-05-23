@@ -10,6 +10,7 @@
 #include <unordered_map>
 #include <vector>
 #include <cstdlib>
+#include <queue>
 
 #define CACHELINE_SIZE 64
 
@@ -90,16 +91,15 @@ void mrc_run(uint64_t   num_keys,
     uint64_t log_size = 0;
     uint64_t *log_mapping = (uint64_t *) malloc(num_keys * sizeof(*log_mapping));
     BUG_ON(log_mapping == NULL);
+    *out_log_mapping = log_mapping;
     // Each log slot is 32 MB
     uint64_t log_slot_size = 32 * (1UL << 20);
 
     fprintf(stderr, "Simulating loading...\n");
     uint64_t *obj_load_idx = (uint64_t *) malloc(num_keys * sizeof(*obj_load_idx));
     BUG_ON(obj_load_idx == NULL);
-    for (uint64_t i = 0; i < num_keys; ++i) {
-        obj_load_idx[i] = i;
-    }
-    std::shuffle(obj_load_idx, obj_load_idx + num_keys, std::default_random_engine(seed));
+    iota(obj_load_idx, obj_load_idx + num_keys, 0);
+    shuffle(obj_load_idx, obj_load_idx + num_keys, default_random_engine(seed));
     for (uint64_t i = 0; i < num_keys; ++i) {
         uint64_t obj_idx = obj_load_idx[i];
         uint64_t local_slot_offset = log_size % log_slot_size;
@@ -156,11 +156,8 @@ void mrc_run(uint64_t   num_keys,
     fprintf(stderr, "\tProgress: %lld/%lld (100.00%%)\n", num_keys, num_keys);
 
     fprintf(stderr, "Simulating CPU cache...\n");
-    uint64_t *line_index_arr = (uint64_t *) malloc((hash_table_num_lines + log_num_lines) * sizeof(*line_index_arr));
-    BUG_ON(line_index_arr == NULL);
-    iota(line_index_arr, line_index_arr + (hash_table_num_lines + log_num_lines), 0);
-    stable_sort(line_index_arr, line_index_arr + (hash_table_num_lines + log_num_lines),
-    [&](const uint64_t &i, const uint64_t &j){
+    priority_queue<uint64_t, vector<uint64_t>, function<bool(uint64_t, uint64_t)>> queue(
+    [&](uint64_t i, uint64_t j){
         double val_i, val_j;
         if (i >= hash_table_num_lines) {
             val_i = log_exp_line[i - hash_table_num_lines];
@@ -172,11 +169,28 @@ void mrc_run(uint64_t   num_keys,
         } else {
             val_j = ht_exp_line[j];
         }
-        return val_i < val_j;
+        return val_i > val_j;
     });
+
+    uint64_t num_lines_in_cpu_cache = cpu_cache_size / CACHELINE_SIZE;
+    for (uint64_t i = 0; i < hash_table_num_lines + log_num_lines; ++i) {
+        queue.push(i);
+        if (queue.size() > num_lines_in_cpu_cache) {
+            queue.pop();
+        }
+        BUG_ON(queue.size() > num_lines_in_cpu_cache);
+        if (i % 100000 == 0) {
+            fprintf(stderr, "\tProgress: %lld/%lld (%.2f%%)\r", i + 1,
+                    hash_table_num_lines + log_num_lines,
+                    ((double) (100 * (i + 1))) / (double) (hash_table_num_lines + log_num_lines));
+        }
+    }
+    fprintf(stderr, "\tProgress: %lld/%lld (100.00%%)\n",
+            hash_table_num_lines + log_num_lines, hash_table_num_lines + log_num_lines);
     *out_cache_exp = 0;
-    for (uint64_t i = 0; i < cpu_cache_size / CACHELINE_SIZE; ++i) {
-        uint64_t line_index = line_index_arr[hash_table_num_lines + log_num_lines - i - 1];
+    while (!queue.empty()) {
+        uint64_t line_index = queue.top();
+        queue.pop();
         if (line_index >= hash_table_num_lines) {
             *out_cache_exp += log_exp_line[line_index - hash_table_num_lines];
             log_exp_line[line_index - hash_table_num_lines] = 0;
@@ -185,9 +199,7 @@ void mrc_run(uint64_t   num_keys,
             ht_exp_line[line_index] = 0;
         }
     }
-    *out_log_mapping = log_mapping;
 
-    free(line_index_arr);
     free(obj_load_idx);
 }
 
@@ -219,7 +231,7 @@ int main(int argc, char *argv[])
         }
     }
     if (a != 0) {
-        std::shuffle(obj_pmf, obj_pmf + num_keys, std::default_random_engine(pmf_seed));
+        shuffle(obj_pmf, obj_pmf + num_keys, default_random_engine(pmf_seed));
     }
 
     double *out_ht_exp = NULL;
@@ -242,13 +254,13 @@ int main(int argc, char *argv[])
     // Generate mapping between PMEM pages and DRAM pages
     uint64_t ht_num_pages = (out_ht_num_lines * CACHELINE_SIZE + page_size - 1) / page_size;
     uint64_t log_num_pages = (out_log_num_lines * CACHELINE_SIZE + page_size - 1) / page_size;
-
+ 
     uint64_t num_dram_pages = dram_size / page_size;
     BUG_ON(8 * num_dram_pages < ht_num_pages + log_num_pages);
     uint64_t *dram_page_arr = (uint64_t *) malloc(num_dram_pages * sizeof(*dram_page_arr));
     BUG_ON(dram_page_arr == NULL);
     iota(dram_page_arr, dram_page_arr + num_dram_pages, 0);
-    std::shuffle(dram_page_arr, dram_page_arr + num_dram_pages, std::default_random_engine(rand_r(&map_seed)));
+    // shuffle(dram_page_arr, dram_page_arr + num_dram_pages, default_random_engine(rand_r(&map_seed)));
 
     uint64_t *ht_page_map_arr = (uint64_t *) malloc(ht_num_pages * sizeof(*ht_page_map_arr));
     BUG_ON(ht_page_map_arr == NULL);
@@ -259,14 +271,14 @@ int main(int argc, char *argv[])
     for (uint64_t i = 0; i < ht_num_pages; ++i) {
         ht_page_map_arr[i] = dram_page_arr[dram_page_index++];
         if (dram_page_index == num_dram_pages) {
-            std::shuffle(dram_page_arr, dram_page_arr + num_dram_pages, std::default_random_engine(rand_r(&map_seed)));
+            // shuffle(dram_page_arr, dram_page_arr + num_dram_pages, default_random_engine(rand_r(&map_seed)));
             dram_page_index = 0;
         }
     }
     for (uint64_t i = 0; i < log_num_pages; ++i) {
         log_page_map_arr[i] = dram_page_arr[dram_page_index++];
         if (dram_page_index == num_dram_pages) {
-            std::shuffle(dram_page_arr, dram_page_arr + num_dram_pages, std::default_random_engine(rand_r(&map_seed)));
+            // shuffle(dram_page_arr, dram_page_arr + num_dram_pages, default_random_engine(rand_r(&map_seed)));
             dram_page_index = 0;
         }
     }
@@ -293,7 +305,7 @@ int main(int argc, char *argv[])
         uint64_t hash_bucket = key_hash(i) % num_buckets;
         uint64_t hash_table_line = (hash_bucket * hash_bucket_size) / CACHELINE_SIZE;
 
-        uint64_t hash_table_dram_line = ht_page_map_arr[(hash_table_line * CACHELINE_SIZE) / page_size] * lines_per_page
+        uint64_t hash_table_dram_line = ht_page_map_arr[hash_table_line / lines_per_page] * lines_per_page
                                         + (hash_table_line % lines_per_page);
         map[hash_table_dram_line].push_back(hash_table_line);
 
@@ -302,7 +314,7 @@ int main(int argc, char *argv[])
              j <= (log_addr + record_size - 1) / CACHELINE_SIZE;
              ++j)
         {
-            uint64_t log_dram_line = log_page_map_arr[(j * CACHELINE_SIZE) / page_size] * lines_per_page
+            uint64_t log_dram_line = log_page_map_arr[j / lines_per_page] * lines_per_page
                                      + (j % lines_per_page);
             map[log_dram_line].push_back(out_ht_num_lines + j);
         }
@@ -315,6 +327,8 @@ int main(int argc, char *argv[])
                 } else {
                     log_hit[line_index - out_ht_num_lines] += obj_pm;
                 }
+            } else {
+                fprintf(stderr, "\n\tFound a conflict line!\n");
             }
             dram_line_norm_arr[iter.first] += obj_pm;
         }
@@ -330,7 +344,7 @@ int main(int argc, char *argv[])
     double hit_prob = 0;
     double exp_sum = 0;
     for (uint64_t i = 0; i < out_ht_num_lines; ++i) {
-        uint64_t hash_table_dram_line = ht_page_map_arr[(i * CACHELINE_SIZE) / page_size] * lines_per_page
+        uint64_t hash_table_dram_line = ht_page_map_arr[i / lines_per_page] * lines_per_page
                                         + (i % lines_per_page);
         if (dram_line_norm_arr[hash_table_dram_line] == 0)
             continue;
@@ -338,7 +352,7 @@ int main(int argc, char *argv[])
         exp_sum += out_ht_exp[i];
     }
     for (uint64_t i = 0; i < out_log_num_lines; ++i) {
-        uint64_t log_dram_line = log_page_map_arr[(i * CACHELINE_SIZE) / page_size] * lines_per_page
+        uint64_t log_dram_line = log_page_map_arr[i / lines_per_page] * lines_per_page
                                  + (i % lines_per_page);
         if (dram_line_norm_arr[log_dram_line] == 0)
             continue;

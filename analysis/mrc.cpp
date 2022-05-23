@@ -7,6 +7,8 @@
 #include <cmath>
 #include <cstdlib>
 #include <algorithm>
+#include <queue>
+#include <vector>
 
 #define CACHELINE_SIZE 64
 
@@ -92,10 +94,8 @@ void run(uint64_t   num_keys,
     fprintf(stderr, "Simulating loading...\n");
     uint64_t *obj_load_idx = (uint64_t *) malloc(num_keys * sizeof(*obj_load_idx));
     BUG_ON(obj_load_idx == NULL);
-    for (uint64_t i = 0; i < num_keys; ++i) {
-        obj_load_idx[i] = i;
-    }
-    std::shuffle(obj_load_idx, obj_load_idx + num_keys, std::default_random_engine(seed));
+    iota(obj_load_idx, obj_load_idx + num_keys, 0);
+    shuffle(obj_load_idx, obj_load_idx + num_keys, default_random_engine(seed));
     for (uint64_t i = 0; i < num_keys; ++i) {
         uint64_t obj_idx = obj_load_idx[i];
         uint64_t local_slot_offset = log_size % log_slot_size;
@@ -158,11 +158,8 @@ void run(uint64_t   num_keys,
     fprintf(stderr, "\tProgress: %lld/%lld (100.00%%)\n", num_keys, num_keys);
 
     fprintf(stderr, "Simulating CPU cache...\n");
-    uint64_t *line_index_arr = (uint64_t *) malloc((hash_table_num_lines + log_num_lines) * sizeof(*line_index_arr));
-    BUG_ON(line_index_arr == NULL);
-    iota(line_index_arr, line_index_arr + (hash_table_num_lines + log_num_lines), 0);
-    stable_sort(line_index_arr, line_index_arr + (hash_table_num_lines + log_num_lines),
-    [&](const uint64_t &i, const uint64_t &j){
+    priority_queue<uint64_t, vector<uint64_t>, function<bool(uint64_t, uint64_t)>> queue(
+    [&](uint64_t i, uint64_t j){
         double val_i, val_j;
         if (i >= hash_table_num_lines) {
             val_i = log_exp_line[i - hash_table_num_lines];
@@ -174,11 +171,28 @@ void run(uint64_t   num_keys,
         } else {
             val_j = ht_exp_line[j];
         }
-        return val_i < val_j;
+        return val_i > val_j;
     });
+
+    uint64_t num_lines_in_cpu_cache = cpu_cache_size / CACHELINE_SIZE;
+    for (uint64_t i = 0; i < hash_table_num_lines + log_num_lines; ++i) {
+        queue.push(i);
+        if (queue.size() > num_lines_in_cpu_cache) {
+            queue.pop();
+        }
+        BUG_ON(queue.size() > num_lines_in_cpu_cache);
+        if (i % 100000 == 0) {
+            fprintf(stderr, "\tProgress: %lld/%lld (%.2f%%)\r", i + 1,
+                    hash_table_num_lines + log_num_lines,
+                    ((double) (100 * (i + 1))) / (double) (hash_table_num_lines + log_num_lines));
+        }
+    }
+    fprintf(stderr, "\tProgress: %lld/%lld (100.00%%)\n",
+            hash_table_num_lines + log_num_lines, hash_table_num_lines + log_num_lines);
     *out_cache_exp = 0;
-    for (uint64_t i = 0; i < cpu_cache_size / CACHELINE_SIZE; ++i) {
-        uint64_t line_index = line_index_arr[hash_table_num_lines + log_num_lines - i - 1];
+    while (!queue.empty()) {
+        uint64_t line_index = queue.top();
+        queue.pop();
         if (line_index >= hash_table_num_lines) {
             *out_cache_exp += log_exp_line[line_index - hash_table_num_lines];
             log_exp_line[line_index - hash_table_num_lines] = 0;
@@ -191,15 +205,26 @@ void run(uint64_t   num_keys,
     fprintf(stderr, "Calculating page-level distribution...\n");
     for (uint64_t i = 0; i < hash_table_num_lines; ++i) {
         (*out_ht_exp)[i / lines_per_page] += ht_exp_line[i];
+        if (i % 100000 == 0) {
+            fprintf(stderr, "\tProgress: %lld/%lld (%.2f%%)\r", i + 1,
+                    hash_table_num_lines + log_num_lines,
+                    ((double) (100 * (i + 1))) / (double) (hash_table_num_lines + log_num_lines));
+        }
     }
     for (uint64_t i = 0; i < log_num_lines; ++i) {
         (*out_log_exp)[i / lines_per_page] += log_exp_line[i];
+        if (i % 100000 == 0) {
+            fprintf(stderr, "\tProgress: %lld/%lld (%.2f%%)\r", hash_table_num_lines + i + 1,
+                    hash_table_num_lines + log_num_lines,
+                    ((double) (100 * (hash_table_num_lines + i + 1))) / (double) (hash_table_num_lines + log_num_lines));
+        }
     }
+    fprintf(stderr, "\tProgress: %lld/%lld (100.00%%)\n",
+            hash_table_num_lines + log_num_lines, hash_table_num_lines + log_num_lines);
 
     *out_ht_num_pages = hash_table_num_pages;
     *out_log_num_pages = log_num_pages;
 
-    free(line_index_arr);
     free(ht_exp_line);
     free(log_exp_line);
     free(obj_load_idx);
@@ -233,7 +258,7 @@ int main(int argc, char *argv[])
         }
     }
     if (a != 0) {
-        std::shuffle(obj_pmf, obj_pmf + num_keys, std::default_random_engine(pmf_seed));
+        shuffle(obj_pmf, obj_pmf + num_keys, default_random_engine(pmf_seed));
     }
 
     double *out_ht_exp = NULL;
@@ -287,7 +312,7 @@ int main(int argc, char *argv[])
         }
         cumsum += value;
 
-        if ((i + 1) * page_size >= target_size) {
+        if ((i + 1) * page_size >= target_size || (i + 1) == out_ht_num_pages + out_log_num_pages) {
             printf("%lld,%.32f\n", (out_ht_num_pages + out_log_num_pages - (i + 1)) * page_size, cumsum / sum);
             target_size += size_gap;
         }
