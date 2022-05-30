@@ -205,8 +205,8 @@ void mrc_run(uint64_t   num_keys,
 
 int main(int argc, char *argv[])
 {
-    if (argc != 9) {
-        fprintf(stderr, "Usage: %s <num_keys> <key_size> <value_size> <page_size> <cpu_cache_size> <a> <dram_size> <map_seed>\n", argv[0]);
+    if (argc != 10) {
+        fprintf(stderr, "Usage: %s <num_keys> <key_size> <value_size> <page_size> <cpu_cache_size> <a> <dram_size> <map_seed> <max_num_threads>\n", argv[0]);
         exit(1);
     }
     uint64_t num_keys = atol(argv[1]);
@@ -220,18 +220,25 @@ int main(int argc, char *argv[])
     uint64_t dram_size = atol(argv[7]);
     BUG_ON(dram_size % page_size != 0);
     unsigned int map_seed = atoi(argv[8]);
+    int max_num_threads = atoi(argv[9]);
+    BUG_ON(max_num_threads < 1);
 
     double *obj_pmf = (double *) malloc(num_keys * sizeof(*obj_pmf));
     BUG_ON(obj_pmf == NULL);
+    double obj_pmf_sum = 0;
     for (uint64_t i = 0; i < num_keys; ++i) {
         if (a == 0) {
             obj_pmf[i] = 1.0L / ((double) num_keys);
         } else {
             obj_pmf[i] = 1.0L / pow((double) (i + 1), (double) a);
+            obj_pmf_sum += obj_pmf[i];
         }
     }
     if (a != 0) {
         shuffle(obj_pmf, obj_pmf + num_keys, default_random_engine(pmf_seed));
+        for (uint64_t i = 0; i < num_keys; ++i) {
+            obj_pmf[i] = obj_pmf[i] / obj_pmf_sum;
+        }
     }
 
     double *out_ht_exp = NULL;
@@ -285,9 +292,13 @@ int main(int argc, char *argv[])
 
     // Calculate unnormalized hit prob and the normalization factor
     uint64_t num_dram_lines = num_dram_pages * lines_per_page;
-    double *dram_line_norm_arr = (double *) malloc(num_dram_lines * sizeof(*dram_line_norm_arr));
-    BUG_ON(dram_line_norm_arr == NULL);
-    memset(dram_line_norm_arr, 0, num_dram_lines * sizeof(*dram_line_norm_arr));
+    double *dram_line_ht_hit_arr = (double *) malloc(num_dram_lines * sizeof(*dram_line_ht_hit_arr));
+    BUG_ON(dram_line_ht_hit_arr == NULL);
+    memset(dram_line_ht_hit_arr, 0, num_dram_lines * sizeof(*dram_line_ht_hit_arr));
+
+    double *dram_line_log_hit_arr = (double *) malloc(num_dram_lines * sizeof(*dram_line_log_hit_arr));
+    BUG_ON(dram_line_log_hit_arr == NULL);
+    memset(dram_line_log_hit_arr, 0, num_dram_lines * sizeof(*dram_line_log_hit_arr));
 
     double *ht_hit = (double *) malloc(out_ht_num_lines * sizeof(*ht_hit));
     BUG_ON(ht_hit == NULL);
@@ -300,14 +311,14 @@ int main(int argc, char *argv[])
     fprintf(stderr, "Calculating unnormalized hit probability...\n");
     for (uint64_t i = 0; i < num_keys; ++i) {
         double obj_pm = obj_pmf[i];
-        unordered_map<uint64_t, vector<uint64_t>> map;
 
         uint64_t hash_bucket = key_hash(i) % num_buckets;
         uint64_t hash_table_line = (hash_bucket * hash_bucket_size) / CACHELINE_SIZE;
 
         uint64_t hash_table_dram_line = ht_page_map_arr[hash_table_line / lines_per_page] * lines_per_page
                                         + (hash_table_line % lines_per_page);
-        map[hash_table_dram_line].push_back(hash_table_line);
+        ht_hit[hash_table_line] += obj_pm;
+        dram_line_ht_hit_arr[hash_table_dram_line] += obj_pm;
 
         uint64_t log_addr = log_mapping[i];
         for (uint64_t j = log_addr / CACHELINE_SIZE;
@@ -316,21 +327,8 @@ int main(int argc, char *argv[])
         {
             uint64_t log_dram_line = log_page_map_arr[j / lines_per_page] * lines_per_page
                                      + (j % lines_per_page);
-            map[log_dram_line].push_back(out_ht_num_lines + j);
-        }
-        for (auto& iter : map) {
-            BUG_ON(iter.second.size() == 0);
-            if (iter.second.size() == 1) {
-                uint64_t line_index = iter.second[0];
-                if (line_index < out_ht_num_lines) {
-                    ht_hit[line_index] += obj_pm;
-                } else {
-                    log_hit[line_index - out_ht_num_lines] += obj_pm;
-                }
-            } else {
-                fprintf(stderr, "\n\tFound a conflict line!\n");
-            }
-            dram_line_norm_arr[iter.first] += obj_pm;
+            log_hit[j] += obj_pm;
+            dram_line_log_hit_arr[log_dram_line] += obj_pm;
         }
         if (i % 100000 == 0) {
             fprintf(stderr, "\tProgress: %lld/%lld (%.2f%%)\r", i + 1, num_keys,
@@ -341,25 +339,38 @@ int main(int argc, char *argv[])
 
     // Calculate overall hit prob
     fprintf(stderr, "Calculating overall hit probability...\n");
-    double hit_prob = 0;
-    double exp_sum = 0;
-    for (uint64_t i = 0; i < out_ht_num_lines; ++i) {
-        uint64_t hash_table_dram_line = ht_page_map_arr[i / lines_per_page] * lines_per_page
-                                        + (i % lines_per_page);
-        if (dram_line_norm_arr[hash_table_dram_line] == 0)
-            continue;
-        hit_prob += out_ht_exp[i] * (ht_hit[i] / dram_line_norm_arr[hash_table_dram_line]);
-        exp_sum += out_ht_exp[i];
+    for (int num_threads = 1; num_threads <= max_num_threads; ++num_threads) {
+        double hit_prob = 0;
+        double exp_sum = 0;
+        for (uint64_t i = 0; i < out_ht_num_lines; ++i) {
+            uint64_t hash_table_dram_line = ht_page_map_arr[i / lines_per_page] * lines_per_page
+                                            + (i % lines_per_page);
+            if (dram_line_ht_hit_arr[hash_table_dram_line] == 0)
+                continue;
+            double cur_hit_prob = ht_hit[i] / dram_line_ht_hit_arr[hash_table_dram_line];
+            double p = 1 - dram_line_ht_hit_arr[hash_table_dram_line];
+            double q = 1 - dram_line_log_hit_arr[hash_table_dram_line];
+            cur_hit_prob *= (1.0 - ((1.0 - pow(p, num_threads)) * (1.0 - pow(q, num_threads)))
+                                   / (num_threads * (1.0 - p) * (1.0 - pow(p, num_threads) * pow(q, num_threads))));
+            hit_prob += out_ht_exp[i] * cur_hit_prob;
+            exp_sum += out_ht_exp[i];
+        }
+        for (uint64_t i = 0; i < out_log_num_lines; ++i) {
+            uint64_t log_dram_line = log_page_map_arr[i / lines_per_page] * lines_per_page
+                                     + (i % lines_per_page);
+            if (dram_line_log_hit_arr[log_dram_line] == 0)
+                continue;
+            double cur_hit_prob = log_hit[i] / dram_line_log_hit_arr[log_dram_line];
+            double p = 1 - dram_line_ht_hit_arr[log_dram_line];
+            double q = 1 - dram_line_log_hit_arr[log_dram_line];
+            cur_hit_prob *= (1.0 - ((1.0 - pow(p, num_threads)) * (1.0 - pow(q, num_threads)))
+                                   / (num_threads * (1.0 - q) * (1.0 - pow(p, num_threads) * pow(q, num_threads))));
+            hit_prob += out_log_exp[i] * cur_hit_prob;
+            exp_sum += out_log_exp[i];
+        }
+        printf("Overall miss probability (%d threads): %.4f\n", num_threads, 1 - (hit_prob / exp_sum));
+        fflush(stdout);
     }
-    for (uint64_t i = 0; i < out_log_num_lines; ++i) {
-        uint64_t log_dram_line = log_page_map_arr[i / lines_per_page] * lines_per_page
-                                 + (i % lines_per_page);
-        if (dram_line_norm_arr[log_dram_line] == 0)
-            continue;
-        hit_prob += out_log_exp[i] * (log_hit[i] / dram_line_norm_arr[log_dram_line]);
-        exp_sum += out_log_exp[i];
-    }
-    printf("Overall miss probability: %.4f\n", 1 - (hit_prob / exp_sum));
 
     free(out_ht_exp);
     free(out_log_exp);
