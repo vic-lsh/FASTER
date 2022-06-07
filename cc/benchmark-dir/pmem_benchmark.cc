@@ -683,6 +683,7 @@ void run_benchmark(store_t* store, size_t num_threads) {
   printf("Finished benchmark: %.2f ops/second/thread\n",
          ((double)total_reads_done_ + (double)total_writes_done_) / ((double)total_duration_ /
          kNanosPerSecond));
+  fflush(stdout);
 }
 
 void run(Workload workload, size_t num_load_threads, size_t num_run_threads) {
@@ -707,6 +708,7 @@ void run(Workload workload, size_t num_load_threads, size_t num_run_threads) {
     init_zipfian_ctxt();
 
   printf("Running benchmark on %" PRIu64 " threads...\n", num_run_threads);
+  fflush(stdout);
   switch(workload) {
   case Workload::A_50_50:
     run_benchmark<ycsb_a_50_50>(&store, num_run_threads);
