@@ -399,7 +399,7 @@ uint64_t next_zipfian(unsigned int *seedp) {
     ret = (uint64_t) ((double)num_records_ * pow(zipfian_ctxt_.eta * u - zipfian_ctxt_.eta + 1, zipfian_ctxt_.alpha));
   }
   ret = fnv1_64_hash(ret) % num_records_;
-  return index_to_key(ret);
+  return ret;
 }
 
 uint64_t __attribute__((optimize("O0"))) next_uniform(unsigned int *seedp) {
@@ -409,7 +409,7 @@ uint64_t __attribute__((optimize("O0"))) next_uniform(unsigned int *seedp) {
   uint64_t volatile *retp = (uint64_t volatile *) &ret;
   *retp = next_zipfian(seedp);
   ret = (uint64_t) (u * (num_records_ - 1));
-  return index_to_key(ret);
+  return ret;
 }
 
 void thread_warmup_store(store_t* store, size_t thread_idx, uint64_t start_idx, uint64_t end_idx) {
@@ -427,7 +427,7 @@ void thread_warmup_store(store_t* store, size_t thread_idx, uint64_t start_idx, 
         store->CompletePending(false);
       }
     }
-    ReadContext context{ index_to_key(i) };
+    ReadContext context{ i };
     Status result = store->Read(context, callback, 1);
   }
 
@@ -466,7 +466,7 @@ void thread_setup_store(store_t* store, size_t thread_idx, uint64_t start_idx, u
         store->CompletePending(false);
       }
     }
-    UpsertContext context{ index_to_key(i), value };
+    UpsertContext context{ i, value };
     store->Upsert(context, callback, 1);
   }
 
@@ -522,7 +522,7 @@ void setup_store(store_t* store, size_t num_threads) {
       mass = 1.0L;
       key_index = i;
     }
-    ReadContext context{ index_to_key(key_index) };
+    ReadContext context{ key_index };
 
     uint64_t ht_addr, log_addr;
     store->GetAddr(context, callback, &ht_addr, &log_addr);
