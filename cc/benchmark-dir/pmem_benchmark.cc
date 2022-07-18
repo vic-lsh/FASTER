@@ -20,6 +20,7 @@
 
 using namespace std::chrono_literals;
 using namespace FASTER::core;
+using namespace std;
 
 /// Basic YCSB benchmark.
 
@@ -353,12 +354,8 @@ void init_zipfian_ctxt() {
     / (1 - (zipfian_ctxt_.zeta2theta / zipfian_ctxt_.zetan));
 }
 
-double next_double(unsigned int *seedp) {
-  return ((double)rand_r(seedp)) / RAND_MAX;
-}
-
-uint64_t next_zipfian(unsigned int *seedp) {
-  double u = next_double(seedp);
+uint64_t next_zipfian(mt19937_64 &rand_eng, uniform_real_distribution<double> &dist) {
+  double u = dist(rand_eng);
   double uz = u * zipfian_ctxt_.zetan;
   uint64_t ret;
   if (uz < 1) {
@@ -372,14 +369,8 @@ uint64_t next_zipfian(unsigned int *seedp) {
   return ret;
 }
 
-uint64_t __attribute__((optimize("O0"))) next_uniform(unsigned int *seedp) {
-  double u = next_double(seedp);
-  uint64_t ret;
-  // trick to incur the same computation overhead as zipfian
-  uint64_t volatile *retp = (uint64_t volatile *) &ret;
-  *retp = next_zipfian(seedp);
-  ret = (uint64_t) (u * (num_records_ - 1));
-  return ret;
+uint64_t next_uniform(mt19937_64 &rand_eng, uniform_int_distribution<uint64_t> &dist) {
+  return dist(rand_eng);
 }
 
 void thread_warmup_store(store_t* store, size_t thread_idx, uint64_t start_idx, uint64_t end_idx) {
@@ -554,9 +545,9 @@ template <Op(*FN)(std::mt19937&)>
 void thread_run_benchmark(store_t* store, size_t thread_idx) {
   SetThreadAffinity(thread_idx);
 
-  std::random_device rd{};
-  std::mt19937 rng{ rd() };
-  unsigned int seed = (unsigned int) thread_idx;
+  mt19937_64 rand_eng{thread_idx};
+	uniform_real_distribution<double> uniform_real_dist(0, 1);
+	uniform_int_distribution<uint64_t> uniform_int_dist(0, num_records_ - 1);
 
   auto start_time = std::chrono::high_resolution_clock::now();
 
@@ -577,9 +568,9 @@ void thread_run_benchmark(store_t* store, size_t thread_idx) {
     idx++;
     uint64_t key;
     if (zipfian_constant_ > 0)
-      key = next_zipfian(&seed);
+      key = next_zipfian(rand_eng, uniform_real_dist);
     else
-      key = next_uniform(&seed);
+      key = next_uniform(rand_eng, uniform_int_dist);
 
     switch(FN(rng)) {
     case Op::Insert:
