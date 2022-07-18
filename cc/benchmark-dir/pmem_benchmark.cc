@@ -306,7 +306,7 @@ class RmwContext : public IAsyncContext {
 typedef FASTER::device::NullDisk disk_t;
 using store_t = FasterKv<Key, Value, disk_t>;
 
-inline Op ycsb_a_50_50(std::mt19937& rng) {
+inline Op ycsb_a_50_50(std::mt19937_64& rng) {
   if(rng() % 100 < 50) {
     return Op::Read;
   } else {
@@ -314,11 +314,11 @@ inline Op ycsb_a_50_50(std::mt19937& rng) {
   }
 }
 
-inline Op ycsb_rmw_100(std::mt19937& rng) {
+inline Op ycsb_rmw_100(std::mt19937_64& rng) {
   return Op::ReadModifyWrite;
 }
 
-inline Op ycsb_c_100(std::mt19937& rng) {
+inline Op ycsb_c_100(std::mt19937_64& rng) {
   return Op::Read;
 }
 
