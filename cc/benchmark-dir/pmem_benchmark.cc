@@ -572,7 +572,7 @@ void thread_run_benchmark(store_t* store, size_t thread_idx) {
     else
       key = next_uniform(rand_eng, uniform_int_dist);
 
-    switch(FN(rng)) {
+    switch(FN(rand_eng)) {
     case Op::Insert:
     case Op::Upsert: {
       auto callback = [](IAsyncContext* ctxt, Status result) {
