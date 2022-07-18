@@ -541,7 +541,7 @@ void setup_store(store_t* store, size_t num_threads) {
 #endif
 }
 
-template <Op(*FN)(std::mt19937&)>
+template <Op(*FN)(std::mt19937_64&)>
 void thread_run_benchmark(store_t* store, size_t thread_idx) {
   SetThreadAffinity(thread_idx);
 
@@ -625,7 +625,7 @@ void thread_run_benchmark(store_t* store, size_t thread_idx) {
          thread_idx, reads_done, writes_done, (double)duration.count() / kNanosPerSecond);
 }
 
-template <Op(*FN)(std::mt19937&)>
+template <Op(*FN)(std::mt19937_64&)>
 void run_benchmark(store_t* store, size_t num_threads) {
   total_duration_ = 0;
   total_reads_done_ = 0;
