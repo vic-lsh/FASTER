@@ -50,6 +50,7 @@ static constexpr uint64_t kMaxKey = 268435456;
 double zipfian_constant_;
 uint64_t num_records_;
 uint64_t num_ops_;
+uint64_t num_warmup_ops_;
 #ifdef USE_OPT
 uint64_t dram_size_;  // GB
 #endif
@@ -373,23 +374,67 @@ uint64_t next_uniform(mt19937_64 &rand_eng, uniform_int_distribution<uint64_t> &
   return dist(rand_eng);
 }
 
-void thread_warmup_store(store_t* store, size_t thread_idx, uint64_t start_idx, uint64_t end_idx) {
-  auto callback = [](IAsyncContext* ctxt, Status result) {
-    CallbackContext<ReadContext> context{ ctxt };
-  };
-
+void thread_warmup_store(store_t* store, size_t thread_idx, uint64_t num_ops) {
   SetThreadAffinity(thread_idx);
+
+  mt19937_64 rand_eng{thread_idx + 0xBEEF};
+	uniform_real_distribution<double> uniform_real_dist(0, 1);
+	uniform_int_distribution<uint64_t> uniform_int_dist(0, num_records_ - 1);
+
   Guid guid = store->StartSession();
 
-  for (uint64_t i = start_idx; i < end_idx; ++i) {
-    if(i % kRefreshInterval == 0) {
+  for (uint64_t idx = 0; idx < num_ops; ++idx) {
+    if(idx % kRefreshInterval == 0) {
       store->Refresh();
-      if(i % kCompletePendingInterval == 0) {
+      if(idx % kCompletePendingInterval == 0) {
         store->CompletePending(false);
       }
     }
-    ReadContext context{ i };
-    Status result = store->Read(context, callback, 1);
+    uint64_t key;
+    if (zipfian_constant_ > 0)
+      key = next_zipfian(rand_eng, uniform_real_dist);
+    else
+      key = next_uniform(rand_eng, uniform_int_dist);
+
+    switch(FN(rand_eng)) {
+    case Op::Insert:
+    case Op::Upsert: {
+      auto callback = [](IAsyncContext* ctxt, Status result) {
+        CallbackContext<UpsertContext> context{ ctxt };
+      };
+
+      UpsertContext context{ key, upsert_value };
+      Status result = store->Upsert(context, callback, 1);
+      ++writes_done;
+      break;
+    }
+    case Op::Scan:
+      printf("Scan currently not supported!\n");
+      exit(1);
+      break;
+    case Op::Read: {
+      auto callback = [](IAsyncContext* ctxt, Status result) {
+        CallbackContext<ReadContext> context{ ctxt };
+      };
+
+      ReadContext context{ key };
+
+      Status result = store->Read(context, callback, 1);
+      ++reads_done;
+      break;
+    }
+    case Op::ReadModifyWrite:
+      auto callback = [](IAsyncContext* ctxt, Status result) {
+        CallbackContext<RmwContext> context{ ctxt };
+      };
+
+      RmwContext context{ key, 5 };
+      Status result = store->Rmw(context, callback, 1);
+      if(result == Status::Ok) {
+        ++writes_done;
+      }
+      break;
+    }
   }
 
   store->CompletePending(true);
@@ -398,11 +443,8 @@ void thread_warmup_store(store_t* store, size_t thread_idx, uint64_t start_idx, 
 
 void warmup_store(store_t* store, size_t num_threads) {
   std::deque<std::thread> threads;
-  uint64_t num_records_per_thread = (num_records_ + num_threads - 1) / num_threads;
   for(size_t thread_idx = 0; thread_idx < num_threads; ++thread_idx) {
-    threads.emplace_back(&thread_warmup_store, store, thread_idx,
-                         thread_idx * num_records_per_thread,
-                         std::min((thread_idx + 1) * num_records_per_thread, num_records_));
+    threads.emplace_back(&thread_warmup_store, store, thread_idx, num_warmup_ops_ / num_threads);
   }
   for(auto& thread : threads) {
     thread.join();
@@ -655,16 +697,16 @@ void run(Workload workload, size_t num_load_threads, size_t num_run_threads) {
   };
 
   printf("Populating the store...\n");
-
   setup_store(&store, num_load_threads);
-  store.WarmUp();
-  // warmup_store(&store, num_load_threads);
-
   store.DumpDistribution();
+  store.WarmUp();
 
   printf("Configuring distribution...\n");
   if (zipfian_constant_ > 0)
     init_zipfian_ctxt();
+
+  printf("Warming up the store...\n");
+  warmup_store(&store, num_load_threads);
 
   printf("Running benchmark on %" PRIu64 " threads...\n", num_run_threads);
   fflush(stdout);
@@ -685,12 +727,12 @@ void run(Workload workload, size_t num_load_threads, size_t num_run_threads) {
 }
 
 int main(int argc, char* argv[]) {
-  size_t kNumArgs = 6;
+  size_t kNumArgs = 7;
 #ifdef USE_OPT
   kNumArgs++;
 #endif
   if(argc != kNumArgs + 1) {
-    printf("Usage: %s <workload> <# load threads> <# run threads> <zipfian constant> <# records> <# ops>", argv[0]);
+    printf("Usage: %s <workload> <# load threads> <# run threads> <zipfian constant> <# records> <# ops> <# warmup ops>", argv[0]);
 #ifdef USE_OPT
     printf(" <DRAM Size (GB)>");
 #endif
@@ -704,8 +746,9 @@ int main(int argc, char* argv[]) {
   zipfian_constant_ = std::atof(argv[4]);
   num_records_ = std::atol(argv[5]);
   num_ops_ = std::atol(argv[6]);
+  num_warmup_ops_ = std::atol(argv[7]);
 #ifdef USE_OPT
-  dram_size_ = std::atol(argv[7]);
+  dram_size_ = std::atol(argv[8]);
 #endif
 
   run(workload, num_load_threads, num_run_threads);
