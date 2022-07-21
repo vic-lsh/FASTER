@@ -706,7 +706,9 @@ void run(Workload workload, size_t num_load_threads, size_t num_run_threads) {
     init_zipfian_ctxt();
 
   printf("Warming up the store...\n");
-  warmup_store(&store, num_load_threads);
+  if (num_warmup_ops_ > 0) {
+    warmup_store(&store, num_load_threads);
+  }
 
   printf("Running benchmark on %" PRIu64 " threads...\n", num_run_threads);
   fflush(stdout);
