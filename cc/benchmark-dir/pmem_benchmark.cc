@@ -374,6 +374,7 @@ uint64_t next_uniform(mt19937_64 &rand_eng, uniform_int_distribution<uint64_t> &
   return dist(rand_eng);
 }
 
+template <Op(*FN)(std::mt19937_64&)>
 void thread_warmup_store(store_t* store, size_t thread_idx, uint64_t num_ops) {
   SetThreadAffinity(thread_idx);
 
@@ -403,9 +404,8 @@ void thread_warmup_store(store_t* store, size_t thread_idx, uint64_t num_ops) {
         CallbackContext<UpsertContext> context{ ctxt };
       };
 
-      UpsertContext context{ key, upsert_value };
+      UpsertContext context{ key, 0 };
       Status result = store->Upsert(context, callback, 1);
-      ++writes_done;
       break;
     }
     case Op::Scan:
@@ -420,7 +420,6 @@ void thread_warmup_store(store_t* store, size_t thread_idx, uint64_t num_ops) {
       ReadContext context{ key };
 
       Status result = store->Read(context, callback, 1);
-      ++reads_done;
       break;
     }
     case Op::ReadModifyWrite:
@@ -431,7 +430,6 @@ void thread_warmup_store(store_t* store, size_t thread_idx, uint64_t num_ops) {
       RmwContext context{ key, 5 };
       Status result = store->Rmw(context, callback, 1);
       if(result == Status::Ok) {
-        ++writes_done;
       }
       break;
     }
@@ -441,10 +439,11 @@ void thread_warmup_store(store_t* store, size_t thread_idx, uint64_t num_ops) {
   store->StopSession();
 }
 
+template <Op(*FN)(std::mt19937_64&)>
 void warmup_store(store_t* store, size_t num_threads) {
   std::deque<std::thread> threads;
   for(size_t thread_idx = 0; thread_idx < num_threads; ++thread_idx) {
-    threads.emplace_back(&thread_warmup_store, store, thread_idx, num_warmup_ops_ / num_threads);
+    threads.emplace_back(&thread_warmup_store<FN>, store, thread_idx, num_warmup_ops_ / num_threads);
   }
   for(auto& thread : threads) {
     thread.join();
@@ -707,7 +706,20 @@ void run(Workload workload, size_t num_load_threads, size_t num_run_threads) {
 
   printf("Warming up the store...\n");
   if (num_warmup_ops_ > 0) {
-    warmup_store(&store, num_load_threads);
+    switch(workload) {
+    case Workload::A_50_50:
+      warmup_store<ycsb_a_50_50>(&store, num_load_threads);
+      break;
+    case Workload::RMW_100:
+      warmup_store<ycsb_rmw_100>(&store, num_load_threads);
+      break;
+    case Workload::C_100:
+      warmup_store<ycsb_c_100>(&store, num_load_threads);
+      break;
+    default:
+      printf("Unknown workload!\n");
+      exit(1);
+    }
   }
 
   printf("Running benchmark on %" PRIu64 " threads...\n", num_run_threads);
