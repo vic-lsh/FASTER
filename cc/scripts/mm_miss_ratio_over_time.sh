@@ -4,6 +4,7 @@ d=12  # DRAM size
 t=1  # Number of threads
 
 num_op=100000000000  # Number of operations
+num_op_short=10000000
 
 # Update value size
 ./change_value_size.sh $v
@@ -24,4 +25,5 @@ for z in 0.7 0.9 0.99; do
     done
 
     kill $(pgrep pmem_benchmark)
+    numactl --cpunodebind 0 --membind 0 colorctl 0-$(($d * 8 - 1)) 0 ./pmem_benchmark 2 8 $t $z $n $num_op_short > ${FILE}
 done
