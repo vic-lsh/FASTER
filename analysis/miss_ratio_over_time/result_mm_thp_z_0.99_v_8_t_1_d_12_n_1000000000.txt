@@ -1,0 +1,28 @@
+Hash table virtual address: [140071042809856, 140105402548224)
+Populating the store...
+Finished populating store: contains 1000000000 elements.
+Warming up log
+Warming up hash table
+number of hash buckets: 536870912
+total record count: 1000000000
+histogram:
+ 0 : 80320697
+ 1 : 128519680
+ 2 : 141172895
+ 3 : 158296030
+ 4 : 28561610
+ 5 : 0
+ 6 : 0
+ 7 : 0
+ 8 : 0
+ 9 : 0
+10 : 0
+11 : 0
+12 : 0
+13 : 0
+14 : 0
+15+: 0
+Configuring distribution...
+Running benchmark on 1 threads...
+Finished thread 0 : 10000000 reads, 0 writes, in 5.41 seconds.
+Finished benchmark: 1849888.96 ops/second/thread

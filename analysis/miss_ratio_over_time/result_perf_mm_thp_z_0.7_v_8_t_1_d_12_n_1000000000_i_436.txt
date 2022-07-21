@@ -1,0 +1,14 @@
+# started on Wed Jul 20 20:12:58 2022
+
+
+ Performance counter stats for 'CPU(s) 0-0':
+
+           5705021      UNC_M_CAS_COUNT.ALL                                         
+           4021470      UNC_M_PMM_CMD1.ALL                                          
+           1443281      mem_load_retired.local_pmm                                   
+           2551235      MEM_LOAD_RETIRED.L3_MISS                                    
+           2632527      MEM_LOAD_RETIRED.L2_MISS                                    
+           3897361      MEM_LOAD_RETIRED.L1_MISS                                    
+
+       1.003963437 seconds time elapsed
+
