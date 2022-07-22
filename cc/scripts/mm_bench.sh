@@ -2,7 +2,7 @@ v=8  # Value size
 n=1000000000  # Number of objects
 t=8  # Number of threads
 
-num_op=10000000000  # Number of operations
+num_op=1000000000  # Number of operations
 num_warmup_op=1000000000  # Number of warmup operations
 
 # Update value size
