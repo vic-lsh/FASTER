@@ -47,6 +47,8 @@ static_assert(kCompletePendingInterval % kRefreshInterval == 0,
 static constexpr uint64_t kNanosPerSecond = 1000000000;
 static constexpr uint64_t kMaxKey = 268435456;
 
+static constexpr uint64_t kNumWarmupThreads = 8;
+
 double zipfian_constant_;
 uint64_t num_records_;
 uint64_t num_ops_;
@@ -696,8 +698,16 @@ void run(Workload workload, size_t num_load_threads, size_t num_run_threads) {
   };
 
   printf("Populating the store...\n");
+  auto setup_start_time = std::chrono::high_resolution_clock::now();
   setup_store(&store, num_load_threads);
+  auto setup_end_time = std::chrono::high_resolution_clock::now();
+
+  std::chrono::nanoseconds setup_duration = setup_end_time - setup_start_time;
+  printf("Setup time: %.2f seconds.\n", (double) setup_duration.count() / kNanosPerSecond);
+
   store.DumpDistribution();
+
+  auto warmup_start_time = std::chrono::high_resolution_clock::now();
   store.WarmUp();
 
   printf("Configuring distribution...\n");
@@ -708,19 +718,22 @@ void run(Workload workload, size_t num_load_threads, size_t num_run_threads) {
   if (num_warmup_ops_ > 0) {
     switch(workload) {
     case Workload::A_50_50:
-      warmup_store<ycsb_a_50_50>(&store, num_load_threads);
+      warmup_store<ycsb_a_50_50>(&store, kNumWarmupThreads);
       break;
     case Workload::RMW_100:
-      warmup_store<ycsb_rmw_100>(&store, num_load_threads);
+      warmup_store<ycsb_rmw_100>(&store, kNumWarmupThreads);
       break;
     case Workload::C_100:
-      warmup_store<ycsb_c_100>(&store, num_load_threads);
+      warmup_store<ycsb_c_100>(&store, kNumWarmupThreads);
       break;
     default:
       printf("Unknown workload!\n");
       exit(1);
     }
   }
+  auto warmup_end_time = std::chrono::high_resolution_clock::now();
+  std::chrono::nanoseconds warmup_duration = warmup_end_time - warmup_start_time;
+  printf("Warmup time: %.2f seconds.\n", (double) warmup_duration.count() / kNanosPerSecond);
 
   printf("Running benchmark on %" PRIu64 " threads...\n", num_run_threads);
   fflush(stdout);
