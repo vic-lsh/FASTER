@@ -13,9 +13,10 @@
 #include <sys/mman.h>
 #include <numaif.h>
 #include <numa.h>
+#include <signal.h>
 
-#define PAGE_SIZE 4096
-#define HUGE_PAGE_SIZE 2097152
+#define PAGE_SIZE 4096UL
+#define HUGE_PAGE_SIZE 2097152UL
 
 #if defined(USE_OPT) && ((OPT_PAGE_SIZE) == (HUGE_PAGE_SIZE))
 #define OPT_HUGE_PAGE
@@ -87,11 +88,13 @@ class Utility {
   }
 };
 
-inline void BUG_ON(bool cond) {
-  if (cond) {
-    abort();
-  }
-}
+#define BUG_ON(cond)    \
+  do {                  \
+    if (cond) {         \
+      fprintf(stdout, "BUG_ON: %s (L%d) %s\n", __FILE__, __LINE__, __FUNCTION__); \
+      raise(SIGABRT);   \
+    }                   \
+  } while (0)
 
 uint64_t addr_translate(int fd, void *ptr) {
 	uint64_t virtual_addr = (uint64_t) ptr;
