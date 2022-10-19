@@ -70,8 +70,8 @@ uint64_t addr_translate(int fd, void *ptr) {
    * https://www.kernel.org/doc/Documentation/vm/pagemap.txt
    */
   uint64_t page;
-  int ret = pread(fd, &page, 8, offset);
-  BUG_ON(ret != 8);
+  int ret = pread(fd, &page, sizeof(page), offset);
+  BUG_ON(ret != sizeof(page));
   BUG_ON((page & (1UL << 63UL)) == 0);  // should present
   BUG_ON((page & (1UL << 62UL)) != 0);  // shoud not be swapped
   BUG_ON((page & 0x7fffffffffffffUL) == 0);
@@ -154,26 +154,26 @@ int main(int argc, char *argv[]) {
   for (uint64_t i = 0; i < num_pages; ++i) {
     uint64_t phys_addr = addr_translate(fd, buffer + i * page_size);
     uint64_t actual_nid = phys_addr / (DRAM_SIZE_PER_NODE * NR_PMEM_CHUNK);
-    if (actual_nid != nid) {
-      printf("NUMA ID mismatch for phys_addr 0x%lx: expected %ld, got %ld\n", phys_addr, nid, actual_nid);
-    }
-    // BUG_ON(phys_addr / (DRAM_SIZE_PER_NODE * NR_PMEM_CHUNK) != nid);
+    // if (actual_nid != nid) {
+    //   printf("NUMA ID mismatch for phys_addr 0x%lx: expected %ld, got %ld\n", phys_addr, nid, actual_nid);
+    // }
+    BUG_ON(phys_addr / (DRAM_SIZE_PER_NODE * NR_PMEM_CHUNK) != nid);
 
     uint64_t color = get_page_color(phys_addr, page_size);
-    if (!color_is_set(colormask, color)) {
-      printf("Color mismatch for phys_addr 0x%lx: got %ld\n", phys_addr, color);
-    }
-    // BUG_ON(!color_is_set(colormask, color));
+    // if (!color_is_set(colormask, color)) {
+    //   printf("Color mismatch for phys_addr 0x%lx: got %ld\n", phys_addr, color);
+    // }
+    BUG_ON(!color_is_set(colormask, color));
 
     uint64_t dram_addr = phys_addr % DRAM_SIZE_PER_NODE;
     if (map.find(dram_addr) == map.end()) {
       map[dram_addr] = 0;
     }
     map[dram_addr]++;
-    if (map[dram_addr] > max_occupancy) {
-      printf("Max occupancy exceeded for phys_addr 0x%lx: expected %ld, got %ld\n", max_occupancy, map[dram_addr]);
-    }
-    // BUG_ON(map[dram_addr] > max_occupancy);
+    // if (map[dram_addr] > max_occupancy) {
+    //   printf("Max occupancy exceeded for phys_addr 0x%lx: expected %ld, got %ld\n", phys_addr, max_occupancy, map[dram_addr]);
+    // }
+    BUG_ON(map[dram_addr] > max_occupancy);
   }
   BUG_ON(close(fd) != 0);
   return 0;
