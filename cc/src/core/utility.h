@@ -114,7 +114,7 @@ uint64_t addr_translate(int fd, void *ptr) {
 
   uint64_t physical_addr = ((page & 0x7fffffffffffffUL) * 4096)
                            + (virtual_addr % 4096);
-  BUG_ON((physical_addr % 4096) == (virtual_addr % 4096));
+  BUG_ON((physical_addr % 4096) != (virtual_addr % 4096));
   return physical_addr;
 }
 
