@@ -8,15 +8,22 @@
 #include <cstdlib>
 #include <cmath>
 #include <random>
+#include <chrono>
 #include <string>
 #include <numeric>
 #include <algorithm>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <fcntl.h>
 
 #include "file.h"
 
 #include "core/auto_ptr.h"
 #include "core/faster.h"
 #include "device/null_disk.h"
+
+#define SHM_NAME "color_remap_pmem_benchmark"
 
 using namespace std::chrono_literals;
 using namespace FASTER::core;
@@ -664,6 +671,7 @@ void thread_warmup_store(store_t* store, size_t thread_idx, uint64_t num_ops) {
       auto callback = [](IAsyncContext* ctxt, Status result) {
         CallbackContext<UpsertContext> context{ ctxt };
       };
+
 #if VALUE_NUM_UINT64 == 1
       UpsertContext context{ key, 0 };
 #else
@@ -690,6 +698,7 @@ void thread_warmup_store(store_t* store, size_t thread_idx, uint64_t num_ops) {
       auto callback = [](IAsyncContext* ctxt, Status result) {
         CallbackContext<RmwContext> context{ ctxt };
       };
+
 #if VALUE_NUM_UINT64 == 1
       RmwContext context{ key, 5 };
 #else
@@ -890,6 +899,7 @@ void thread_run_benchmark(store_t* store, size_t thread_idx) {
       auto callback = [](IAsyncContext* ctxt, Status result) {
         CallbackContext<UpsertContext> context{ ctxt };
       };
+
 #if VALUE_NUM_UINT64 == 1
       UpsertContext context{ key, upsert_value };
 #else
@@ -973,6 +983,20 @@ void run(Workload workload, size_t num_load_threads, size_t num_run_threads) {
     /* file name */ "",
   };
 
+  int shm_fd = shm_open(SHM_NAME, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR);
+  BUG_ON(shm_fd < 0);
+
+  int ret;
+  ret = ftruncate(shm_fd, PAGE_SIZE);
+  BUG_ON(ret != 0);
+
+  void *shm_ptr = mmap(NULL, PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+  BUG_ON(shm_ptr == MAP_FAILED);
+
+  uint64_t *indicator = (uint64_t *) shm_ptr;
+  uint64_t indicator_value = 0;
+  __atomic_store(indicator, &indicator_value, __ATOMIC_SEQ_CST);
+
   printf("Populating the store...\n");
   auto setup_start_time = std::chrono::high_resolution_clock::now();
   setup_store(&store, num_load_threads);
@@ -1027,6 +1051,58 @@ void run(Workload workload, size_t num_load_threads, size_t num_run_threads) {
     printf("Unknown workload!\n");
     exit(1);
   }
+
+  printf("Waiting for Miss PEBS...\n");
+  indicator_value = 1;
+  __atomic_store(indicator, &indicator_value, __ATOMIC_SEQ_CST);
+  do {
+    this_thread::sleep_for(chrono::seconds(1));
+    __atomic_load(indicator, &indicator_value, __ATOMIC_SEQ_CST);
+  } while (indicator_value == 1);
+  BUG_ON(indicator_value != 2);
+
+  total_ops_done_.store(0);
+  total_duration_.store(0);
+  total_reads_done_.store(0);
+  total_writes_done_.store(0);
+
+  store.WarmUp();
+
+  printf("Re-Warming up the store...\n");
+  if (num_warmup_ops_ > 0) {
+    switch(workload) {
+    case Workload::A_50_50:
+      warmup_store<ycsb_a_50_50>(&store, kNumWarmupThreads);
+      break;
+    case Workload::RMW_100:
+      warmup_store<ycsb_rmw_100>(&store, kNumWarmupThreads);
+      break;
+    case Workload::C_100:
+      warmup_store<ycsb_c_100>(&store, kNumWarmupThreads);
+      break;
+    default:
+      printf("Unknown workload!\n");
+      exit(1);
+    }
+  }
+
+  printf("Re-Running benchmark on %" PRIu64 " threads...\n", num_run_threads);
+  fflush(stdout);
+  switch(workload) {
+  case Workload::A_50_50:
+    run_benchmark<ycsb_a_50_50>(&store, num_run_threads);
+    break;
+  case Workload::RMW_100:
+    run_benchmark<ycsb_rmw_100>(&store, num_run_threads);
+    break;
+  case Workload::C_100:
+    run_benchmark<ycsb_c_100>(&store, num_run_threads);
+    break;
+  default:
+    printf("Unknown workload!\n");
+    exit(1);
+  }
+  printf("Finished re-running\n");
 }
 
 int main(int argc, char* argv[]) {

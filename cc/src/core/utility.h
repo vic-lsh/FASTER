@@ -13,9 +13,10 @@
 #include <sys/mman.h>
 #include <numaif.h>
 #include <numa.h>
+#include <signal.h>
 
-#define PAGE_SIZE 4096
-#define HUGE_PAGE_SIZE 2097152
+#define PAGE_SIZE 4096UL
+#define HUGE_PAGE_SIZE 2097152UL
 
 #if defined(USE_OPT) && ((OPT_PAGE_SIZE) == (HUGE_PAGE_SIZE))
 #define OPT_HUGE_PAGE
@@ -87,33 +88,35 @@ class Utility {
   }
 };
 
-inline void BUG_ON(bool cond) {
-  if (cond) {
-    abort();
-  }
-}
+#define BUG_ON(cond)    \
+  do {                  \
+    if (cond) {         \
+      fprintf(stdout, "BUG_ON: %s (L%d) %s\n", __FILE__, __LINE__, __FUNCTION__); \
+      raise(SIGABRT);   \
+    }                   \
+  } while (0)
 
 uint64_t addr_translate(int fd, void *ptr) {
-	uint64_t virtual_addr = (uint64_t) ptr;
-	uint64_t virtual_pfn = virtual_addr / 4096;
-	size_t offset = virtual_pfn * sizeof(uint64_t);
+  uint64_t virtual_addr = (uint64_t) ptr;
+  uint64_t virtual_pfn = virtual_addr / 4096;
+  size_t offset = virtual_pfn * sizeof(uint64_t);
 
-	/*
-	 * /proc/self/pagemap doc:
-	 * https://www.kernel.org/doc/Documentation/vm/pagemap.txt
-	 */
-	uint64_t page;
-	int ret = pread(fd, &page, 8, offset);
-	BUG_ON(ret != 8);
+  /*
+   * /proc/self/pagemap doc:
+   * https://www.kernel.org/doc/Documentation/vm/pagemap.txt
+   */
+  uint64_t page;
+  int ret = pread(fd, &page, 8, offset);
+  BUG_ON(ret != 8);
   BUG_ON((page & (1UL << 63UL)) == 0);  // should present
   BUG_ON((page & (1UL << 62UL)) != 0);  // shoud not be swapped
-	BUG_ON((page & 0x7fffffffffffffUL) == 0);
+  BUG_ON((page & 0x7fffffffffffffUL) == 0);
 
-	uint64_t physical_addr = ((page & 0x7fffffffffffffUL) * 4096)
-	                         + (virtual_addr % 4096);
-	assert((physical_addr % 4096) == (virtual_addr % 4096));
-	return physical_addr;
-};
+  uint64_t physical_addr = ((page & 0x7fffffffffffffUL) * 4096)
+                           + (virtual_addr % 4096);
+  BUG_ON((physical_addr % 4096) != (virtual_addr % 4096));
+  return physical_addr;
+}
 
 void *huge_mmap(uint64_t size) {
   BUG_ON(size % HUGE_PAGE_SIZE != 0);
