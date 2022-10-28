@@ -24,6 +24,8 @@
 
 using namespace std;
 
+#define FLOATING_POINT
+
 #define BUG_ON(cond)    \
   do {                  \
     if (cond) {         \
@@ -34,8 +36,13 @@ using namespace std;
 
 struct entry {
   uint64_t index;
+#ifdef FLOATING_POINT
+  double num_l3_misses;
+  double num_dram_misses;
+#else
   uint64_t num_l3_misses;
   uint64_t num_dram_misses;
+#endif
 };
 
 
@@ -62,16 +69,23 @@ int main(int argc, char *argv[]) {
     uint64_t index = stol(value) >> shift;
 
     if (map.find(index) == map.end()) {
-	map[index].index = index;
-	map[index].num_l3_misses = 0;
-	map[index].num_dram_misses = 0;
+      map[index].index = index;
+      map[index].num_l3_misses = 0;
+      map[index].num_dram_misses = 0;
     }
     struct entry &entry = map[index];
 
+#ifdef FLOATING_POINT
+    getline(line_stream, value, ',');
+    entry.num_l3_misses += stod(value);
+    getline(line_stream, value, ',');
+    entry.num_dram_misses += stod(value);
+#else
     getline(line_stream, value, ',');
     entry.num_l3_misses += stol(value);
     getline(line_stream, value, ',');
     entry.num_dram_misses += stol(value);
+#endif
   }
   input_file.close();
 
