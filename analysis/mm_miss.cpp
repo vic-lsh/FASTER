@@ -210,8 +210,8 @@ void mrc_run(uint64_t   num_keys,
 
 int main(int argc, char *argv[])
 {
-    if (argc != 9) {
-        fprintf(stderr, "Usage: %s <num_keys> <key_size> <value_size> <page_size> <cpu_cache_size> <a> <dram_size> <map_seed>\n", argv[0]);
+    if (argc != 10) {
+        fprintf(stderr, "Usage: %s <num_keys> <key_size> <value_size> <page_size> <cpu_cache_size> <a> <dram_size> <map_seed> <output_path>\n", argv[0]);
         exit(1);
     }
     uint64_t num_keys = atol(argv[1]);
@@ -225,6 +225,7 @@ int main(int argc, char *argv[])
     uint64_t dram_size = atol(argv[7]);
     BUG_ON(dram_size % page_size != 0);
     unsigned int map_seed = atoi(argv[8]);
+    char *output_path = argv[9];
 
     double *obj_pmf = (double *) malloc(num_keys * sizeof(*obj_pmf));
     BUG_ON(obj_pmf == NULL);
@@ -358,8 +359,11 @@ int main(int argc, char *argv[])
     }
     fprintf(stderr, "\tProgress: %lld/%lld (100.00%%)\n", num_keys, num_keys);
 
+    ofstream output_file;
+    output_file.open(output_path);
+
     // Calculate overall hit prob
-    fprintf(stderr, "Calculating overall hit probability...\n");
+    fprintf(stderr, "Calculating overall hit probability and outputing data...\n");
     double hit_prob = 0;
     double exp_sum = 0;
     for (uint64_t i = 0; i < out_ht_num_lines; ++i) {
@@ -369,6 +373,16 @@ int main(int argc, char *argv[])
             continue;
         hit_prob += out_ht_exp[i] * (ht_hit[i] / dram_line_norm_arr[hash_table_dram_line]);
         exp_sum += out_ht_exp[i];
+
+        output_file << i << ","
+                    << out_ht_exp[i] << ","
+                    << (out_ht_exp[i] * (1 - ht_hit[i] / dram_line_norm_arr[hash_table_dram_line])) << "\n";
+
+        if (i % 100000 == 0) {
+            fprintf(stderr, "\tProgress: %lld/%lld (%.2f%%)\r", i + 1,
+                    out_ht_num_lines + out_log_num_lines,
+                    ((double) (100 * (i + 1))) / (double) (out_ht_num_lines + out_log_num_lines));
+        }
     }
     for (uint64_t i = 0; i < out_log_num_lines; ++i) {
         uint64_t log_dram_line = log_page_map_arr[i / lines_per_page] * lines_per_page
@@ -377,8 +391,21 @@ int main(int argc, char *argv[])
             continue;
         hit_prob += out_log_exp[i] * (log_hit[i] / dram_line_norm_arr[log_dram_line]);
         exp_sum += out_log_exp[i];
+
+        output_file << out_ht_num_lines + i << ","
+                    << out_log_exp[i] << ","
+                    << (out_log_exp[i] * (1 - log_hit[i] / dram_line_norm_arr[log_dram_line])) << "\n";
+
+        if ((out_ht_num_lines + i) % 100000 == 0) {
+            fprintf(stderr, "\tProgress: %lld/%lld (%.2f%%)\r", out_ht_num_lines + i + 1,
+                    out_ht_num_lines + out_log_num_lines,
+                    ((double) (100 * (out_ht_num_lines + i + 1))) / (double) (out_ht_num_lines + out_log_num_lines));
+        }
     }
+    fprintf(stderr, "\tProgress: %lld/%lld (100.00%%)\n", out_ht_num_lines + out_log_num_lines,
+            out_ht_num_lines + out_log_num_lines);
     printf("Overall miss probability: %.4f\n", 1 - (hit_prob / exp_sum));
+    output_file.close();
 
     free(log_hit);
     free(ht_hit);
