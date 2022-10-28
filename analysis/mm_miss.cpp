@@ -14,6 +14,7 @@
 #include <queue>
 
 #define CACHELINE_SIZE 64
+// #define TRACK_CONFLICT
 
 #define BUG_ON(cond)                                                                    \
     do {                                                                                \
@@ -304,14 +305,21 @@ int main(int argc, char *argv[])
     fprintf(stderr, "Calculating unnormalized hit probability...\n");
     for (uint64_t i = 0; i < num_keys; ++i) {
         double obj_pm = obj_pmf[i];
+#ifdef TRACK_CONFLICT
         unordered_map<uint64_t, vector<uint64_t>> map;
+#endif
 
         uint64_t hash_bucket = key_hash(i) % num_buckets;
         uint64_t hash_table_line = (hash_bucket * hash_bucket_size) / CACHELINE_SIZE;
 
         uint64_t hash_table_dram_line = ht_page_map_arr[hash_table_line / lines_per_page] * lines_per_page
                                         + (hash_table_line % lines_per_page);
+#ifdef TRACK_CONFLICT
         map[hash_table_dram_line].push_back(hash_table_line);
+#else
+        ht_hit[hash_table_line] += obj_pm;
+        dram_line_norm_arr[hash_table_dram_line] += obj_pm;
+#endif
 
         uint64_t log_addr = log_mapping[i];
         for (uint64_t j = log_addr / CACHELINE_SIZE;
@@ -320,8 +328,14 @@ int main(int argc, char *argv[])
         {
             uint64_t log_dram_line = log_page_map_arr[j / lines_per_page] * lines_per_page
                                      + (j % lines_per_page);
+#ifdef TRACK_CONFLICT
             map[log_dram_line].push_back(out_ht_num_lines + j);
+#else
+            log_hit[j] += obj_pm;
+            dram_line_norm_arr[log_dram_line] += obj_pm;
+#endif
         }
+#ifdef TRACK_CONFLICT
         for (auto& iter : map) {
             BUG_ON(iter.second.size() == 0);
             if (iter.second.size() == 1) {
@@ -336,6 +350,7 @@ int main(int argc, char *argv[])
             }
             dram_line_norm_arr[iter.first] += obj_pm;
         }
+#endif
         if (i % 100000 == 0) {
             fprintf(stderr, "\tProgress: %lld/%lld (%.2f%%)\r", i + 1, num_keys,
                     ((double) (100 * (i + 1))) / (double) num_keys);
