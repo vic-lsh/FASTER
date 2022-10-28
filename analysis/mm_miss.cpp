@@ -5,6 +5,7 @@
 #include <thread>
 #include <cstdint>
 #include <cmath>
+#include <csignal>
 #include <cstdlib>
 #include <algorithm>
 #include <unordered_map>
@@ -14,13 +15,16 @@
 
 #define CACHELINE_SIZE 64
 
+#define BUG_ON(cond)                                                                    \
+    do {                                                                                \
+        if (cond) {                                                                     \
+            fprintf(stdout, "BUG_ON: %s (L%d) %s\n", __FILE__, __LINE__, __FUNCTION__); \
+            raise(SIGABRT);                                                             \
+        }                                                                               \
+    } while (0)
+
 using namespace std;
 
-
-inline void BUG_ON(bool cond) {
-    if (cond)
-        abort();
-}
 
 uint64_t rotr64(uint64_t x, uint64_t n)
 {
@@ -57,7 +61,7 @@ uint64_t get_record_size(uint64_t key_size, uint64_t value_size)
 }
 
 /*
- * Simulate per-page access distribution based on memory layout
+ * Estimate per-page access distribution based on memory layout
  *
  * Assumptions:
  * + Objects are randomly distributed in the log
@@ -260,7 +264,7 @@ int main(int argc, char *argv[])
     uint64_t *dram_page_arr = (uint64_t *) malloc(num_dram_pages * sizeof(*dram_page_arr));
     BUG_ON(dram_page_arr == NULL);
     iota(dram_page_arr, dram_page_arr + num_dram_pages, 0);
-    // shuffle(dram_page_arr, dram_page_arr + num_dram_pages, default_random_engine(rand_r(&map_seed)));
+    shuffle(dram_page_arr, dram_page_arr + num_dram_pages, default_random_engine(rand_r(&map_seed)));
 
     uint64_t *ht_page_map_arr = (uint64_t *) malloc(ht_num_pages * sizeof(*ht_page_map_arr));
     BUG_ON(ht_page_map_arr == NULL);
@@ -271,14 +275,14 @@ int main(int argc, char *argv[])
     for (uint64_t i = 0; i < ht_num_pages; ++i) {
         ht_page_map_arr[i] = dram_page_arr[dram_page_index++];
         if (dram_page_index == num_dram_pages) {
-            // shuffle(dram_page_arr, dram_page_arr + num_dram_pages, default_random_engine(rand_r(&map_seed)));
+            shuffle(dram_page_arr, dram_page_arr + num_dram_pages, default_random_engine(rand_r(&map_seed)));
             dram_page_index = 0;
         }
     }
     for (uint64_t i = 0; i < log_num_pages; ++i) {
         log_page_map_arr[i] = dram_page_arr[dram_page_index++];
         if (dram_page_index == num_dram_pages) {
-            // shuffle(dram_page_arr, dram_page_arr + num_dram_pages, default_random_engine(rand_r(&map_seed)));
+            shuffle(dram_page_arr, dram_page_arr + num_dram_pages, default_random_engine(rand_r(&map_seed)));
             dram_page_index = 0;
         }
     }
@@ -361,6 +365,13 @@ int main(int argc, char *argv[])
     }
     printf("Overall miss probability: %.4f\n", 1 - (hit_prob / exp_sum));
 
+    free(log_hit);
+    free(ht_hit);
+    free(dram_line_norm_arr);
+    free(log_page_map_arr);
+    free(ht_page_map_arr);
+    free(dram_page_arr);
+    free(log_mapping);
     free(out_ht_exp);
     free(out_log_exp);
     free(obj_pmf);
