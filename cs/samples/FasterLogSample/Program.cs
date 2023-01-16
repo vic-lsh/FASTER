@@ -57,7 +57,7 @@ namespace FasterLogSample
                 {
                     // Log writer thread: create as many as needed
                     new Thread(new ThreadStart(LogWriterThread)).Start();
-                    
+
                     // Threads for iterator scan: create as many as needed
                     new Thread(() => ScanThread()).Start();
 
@@ -104,20 +104,20 @@ namespace FasterLogSample
             List<Point> points = new List<Point>();
 
             using (StreamReader sr = new StreamReader("/home/fsolleza/data/telemetry-samples-small"))
-            using (JsonTextReader reader = new JsonTextReader(sr) 
-                    {
-                       SupportMultipleContent = true
-                    })
+            using (JsonTextReader reader = new JsonTextReader(sr)
+            {
+                SupportMultipleContent = true
+            })
             {
                 var serializer = new JsonSerializer();
-           
+
                 var iter = 1;
                 var erred = 0;
                 while (reader.Read())
                 {
                     if (reader.TokenType == JsonToken.StartObject)
                     {
-                        try 
+                        try
                         {
                             var point = serializer.Deserialize<Point>(reader);
                             // Console.WriteLine(JsonConvert.SerializeObject(point, Formatting.Indented));
