@@ -6,10 +6,22 @@ using System.IO;
 using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Collections.Generic;
 using FASTER.core;
+using Newtonsoft.Json;
 
 namespace FasterLogSample
 {
+    using Value = Dictionary<string, string>;
+
+    public class Point
+    {
+        public string otel_type;
+        public Dictionary<string, Value> attributes;
+        public ulong timestamp;
+        public Value[] values;
+    }
+
     public class Program
     {
         // Entry length can be between 1 and ((1 << FasterLogSettings.PageSizeBits) - 4)
@@ -24,6 +36,8 @@ namespace FasterLogSample
         static void Main()
         {
             bool sync = true;
+
+            LoadJson();
 
             // Populate entry being inserted
             for (int i = 0; i < entryLength; i++)
@@ -82,6 +96,46 @@ namespace FasterLogSample
                     Task.WaitAll(tasks);
                     Task.WaitAll(scan);
                 }
+            }
+        }
+
+        static void LoadJson()
+        {
+            List<Point> points = new List<Point>();
+
+            using (StreamReader sr = new StreamReader("/home/fsolleza/data/telemetry-samples-small"))
+            using (JsonTextReader reader = new JsonTextReader(sr) 
+                    {
+                       SupportMultipleContent = true
+                    })
+            {
+                var serializer = new JsonSerializer();
+           
+                var iter = 1;
+                var erred = 0;
+                while (reader.Read())
+                {
+                    if (reader.TokenType == JsonToken.StartObject)
+                    {
+                        try 
+                        {
+                            var point = serializer.Deserialize<Point>(reader);
+                            // Console.WriteLine(JsonConvert.SerializeObject(point, Formatting.Indented));
+                            if (iter % 1000 == 0)
+                            {
+                                Console.WriteLine("Object {0}: {1}", iter++, point.timestamp);
+                            }
+                            points.Add(point);
+                        }
+                        catch (Exception e)
+                        {
+                            Console.WriteLine("{0}", e);
+                            erred++;
+                        }
+                    }
+                }
+
+                Console.WriteLine("Failed to read {0} samples", erred);
             }
         }
 
