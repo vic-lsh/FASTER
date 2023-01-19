@@ -195,6 +195,7 @@ namespace FasterLogSample
         // Entry length can be between 1 and ((1 << FasterLogSettings.PageSizeBits) - 4)
         const int entryLength = 1 << 10;
         static readonly byte[] staticEntry = new byte[entryLength];
+        static ulong written;
         static FasterLog log;
         static FasterLogScanIterator iter;
 
@@ -203,7 +204,8 @@ namespace FasterLogSample
         /// </summary>
         static void Main()
         {
-            LoadSamples("/home/fsolleza/data/telemetry-samples-small");
+            var points = LoadSamples("/home/fsolleza/data/telemetry-samples-small");
+            var serializedPoints = SerializeAll(points);
 
             // Populate entry being inserted
             for (int i = 0; i < entryLength; i++)
@@ -220,10 +222,10 @@ namespace FasterLogSample
             using (iter = log.Scan(log.BeginAddress, long.MaxValue))
             {
                 // Log writer thread: create as many as needed
-                new Thread(new ThreadStart(LogWriterThread)).Start();
+                new Thread(new ThreadStart(() => LogWriterThread(serializedPoints))).Start();
 
                 // Threads for iterator scan: create as many as needed
-                new Thread(() => ScanThread()).Start();
+                // new Thread(() => ScanThread()).Start();
 
                 // Threads for reporting, commit
                 new Thread(new ThreadStart(ReportThread)).Start();
@@ -233,7 +235,7 @@ namespace FasterLogSample
             }
         }
 
-        static void LoadSamples(string filePath)
+        static List<Point> LoadSamples(string filePath)
         {
             List<Point> points = new List<Point>();
 
@@ -258,9 +260,9 @@ namespace FasterLogSample
                             var point = serializer.Deserialize<Point>(reader);
                             points.Add(point);
                         }
-                        catch (Exception e)
+                        catch (Exception)
                         {
-                            Console.WriteLine("{0}", e);
+                            // Console.WriteLine("{0}", e);
                             erred++;
                         }
                     }
@@ -268,16 +270,43 @@ namespace FasterLogSample
 
                 Console.WriteLine("Failed to read {0} samples", erred);
             }
+
+            return points;
+        }
+
+        static List<byte[]> SerializeAll(List<Point> points)
+        {
+            List<byte[]> serialized = new List<byte[]>();
+
+            foreach (var p in points)
+            {
+                try
+                {
+                    serialized.Add(Point.Serialize(p));
+                }
+                catch (Exception)
+                {
+
+                }
+            }
+
+            return serialized;
         }
 
 
-        static void LogWriterThread()
+        static void LogWriterThread(List<byte[]> serializedPoints)
         {
             while (true)
             {
+                foreach (var point in serializedPoints)
+                {
+                    log.Enqueue(point);
+                    Interlocked.Increment(ref written);
+                }
+
                 // TryEnqueue - can be used with throttling/back-off
                 // Accepts byte[] and ReadOnlySpan<byte>
-                while (!log.TryEnqueue(staticEntry, out _)) ;
+                // while (!log.TryEnqueue(staticEntry, out _)) ;
 
                 // Synchronous blocking enqueue
                 // Accepts byte[] and ReadOnlySpan<byte>
@@ -327,6 +356,7 @@ namespace FasterLogSample
             long lastTime = 0;
             long lastValue = log.TailAddress;
             long lastIterValue = log.BeginAddress;
+            ulong lastWritten = 0;
 
             Stopwatch sw = new();
             sw.Start();
@@ -337,18 +367,22 @@ namespace FasterLogSample
 
                 var nowTime = sw.ElapsedMilliseconds;
                 var nowValue = log.TailAddress;
+                var nowWritten = written;
 
-                Console.WriteLine("Append Throughput: {0} MB/sec, Tail: {1}",
-                    (nowValue - lastValue) / (1000 * (nowTime - lastTime)), nowValue);
+                var throughput = 1000 * (nowWritten - lastWritten) / (ulong)(nowTime - lastTime);
+
+                Console.WriteLine("Append Throughput: {0} samples/sec, {1} MB/sec, Tail: {2}",
+                    throughput, (nowValue - lastValue) / (1000 * (nowTime - lastTime)), nowValue);
                 lastValue = nowValue;
+                lastWritten = nowWritten;
 
-                if (iter != null)
-                {
-                    var nowIterValue = iter.NextAddress;
-                    Console.WriteLine("Scan Throughput: {0} MB/sec, Iter pos: {1}",
-                        (nowIterValue - lastIterValue) / (1000 * (nowTime - lastTime)), nowIterValue);
-                    lastIterValue = nowIterValue;
-                }
+                // if (iter != null)
+                // {
+                //     var nowIterValue = iter.NextAddress;
+                //     Console.WriteLine("Scan Throughput: {0} MB/sec, Iter pos: {1}",
+                //         (nowIterValue - lastIterValue) / (1000 * (nowTime - lastTime)), nowIterValue);
+                //     lastIterValue = nowIterValue;
+                // }
 
                 lastTime = nowTime;
             }
