@@ -5,7 +5,6 @@ using System;
 using System.IO;
 using System.Diagnostics;
 using System.Threading;
-using System.Threading.Tasks;
 using System.Collections.Generic;
 using FASTER.core;
 using Newtonsoft.Json;
@@ -17,8 +16,8 @@ namespace FasterLogSample
     public class Point
     {
         public string otel_type;
-        public Dictionary<string, Value> attributes;
         public ulong timestamp;
+        public Dictionary<string, Value> attributes;
         public Value[] values;
     }
 
@@ -35,9 +34,7 @@ namespace FasterLogSample
         /// </summary>
         static void Main()
         {
-            bool sync = true;
-
-            LoadJson();
+            LoadSamples("/home/fsolleza/data/telemetry-samples-small");
 
             // Populate entry being inserted
             for (int i = 0; i < entryLength; i++)
@@ -53,65 +50,35 @@ namespace FasterLogSample
 
             using (iter = log.Scan(log.BeginAddress, long.MaxValue))
             {
-                if (sync)
-                {
-                    // Log writer thread: create as many as needed
-                    new Thread(new ThreadStart(LogWriterThread)).Start();
+                // Log writer thread: create as many as needed
+                new Thread(new ThreadStart(LogWriterThread)).Start();
 
-                    // Threads for iterator scan: create as many as needed
-                    new Thread(() => ScanThread()).Start();
+                // Threads for iterator scan: create as many as needed
+                new Thread(() => ScanThread()).Start();
 
-                    // Threads for reporting, commit
-                    new Thread(new ThreadStart(ReportThread)).Start();
-                    var t = new Thread(new ThreadStart(CommitThread));
-                    t.Start();
-                    t.Join();
-                }
-                else
-                {
-                    // Async version of demo: expect lower performance
-                    // particularly for small payload sizes
-
-                    const int NumParallelTasks = 10_000;
-                    ThreadPool.SetMinThreads(2 * Environment.ProcessorCount, 2 * Environment.ProcessorCount);
-                    TaskScheduler.UnobservedTaskException += (object sender, UnobservedTaskExceptionEventArgs e) =>
-                    {
-                        Console.WriteLine($"Unobserved task exception: {e.Exception}");
-                        e.SetObserved();
-                    };
-
-                    Task[] tasks = new Task[NumParallelTasks];
-                    for (int i = 0; i < NumParallelTasks; i++)
-                    {
-                        int local = i;
-                        tasks[i] = Task.Run(() => AsyncLogWriter(local));
-                    }
-
-                    var scan = Task.Run(() => AsyncScan());
-
-                    // Threads for reporting, commit
-                    new Thread(new ThreadStart(ReportThread)).Start();
-                    new Thread(new ThreadStart(CommitThread)).Start();
-
-                    Task.WaitAll(tasks);
-                    Task.WaitAll(scan);
-                }
+                // Threads for reporting, commit
+                new Thread(new ThreadStart(ReportThread)).Start();
+                var t = new Thread(new ThreadStart(CommitThread));
+                t.Start();
+                t.Join();
             }
         }
 
-        static void LoadJson()
+        static void LoadSamples(string filePath)
         {
             List<Point> points = new List<Point>();
 
-            using (StreamReader sr = new StreamReader("/home/fsolleza/data/telemetry-samples-small"))
+            using (StreamReader sr = new StreamReader(filePath))
             using (JsonTextReader reader = new JsonTextReader(sr)
             {
                 SupportMultipleContent = true
             })
             {
-                var serializer = new JsonSerializer();
+                var serializer = JsonSerializer.CreateDefault(new JsonSerializerSettings
+                {
+                    NullValueHandling = NullValueHandling.Ignore
+                });
 
-                var iter = 1;
                 var erred = 0;
                 while (reader.Read())
                 {
@@ -120,11 +87,6 @@ namespace FasterLogSample
                         try
                         {
                             var point = serializer.Deserialize<Point>(reader);
-                            // Console.WriteLine(JsonConvert.SerializeObject(point, Formatting.Indented));
-                            if (iter % 1000 == 0)
-                            {
-                                Console.WriteLine("Object {0}: {1}", iter++, point.timestamp);
-                            }
                             points.Add(point);
                         }
                         catch (Exception e)
@@ -159,49 +121,6 @@ namespace FasterLogSample
             }
         }
 
-        /// <summary>
-        /// Async version of enqueue
-        /// </summary>
-        static async Task AsyncLogWriter(int id)
-        {
-            bool batched = false;
-
-            await Task.Yield();
-
-            if (!batched)
-            {
-                // Single commit version - append each item and wait for commit
-                // Needs high parallelism (NumParallelTasks) for perf
-                // Needs separate commit thread to perform regular commit
-                // Otherwise we commit only at page boundaries
-                while (true)
-                {
-                    try
-                    {
-                        await log.EnqueueAndWaitForCommitAsync(staticEntry);
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"{nameof(AsyncLogWriter)}({id}): {ex}");
-                    }
-                }
-            }
-            else
-            {
-                // Batched version - we enqueue many entries to memory,
-                // then wait for commit periodically
-                int count = 0;
-                while (true)
-                {
-                    await log.EnqueueAsync(staticEntry);
-                    if (count++ % 100 == 0)
-                    {
-                        await log.WaitForCommitAsync();
-                    }
-                }
-            }
-        }
-
         static void ScanThread()
         {
             byte[] result;
@@ -232,16 +151,6 @@ namespace FasterLogSample
 
             // Example of recoverable (named) iterator:
             // using (iter = log.Scan(log.BeginAddress, long.MaxValue, "foo"))
-        }
-
-        static async Task AsyncScan()
-        {
-            await foreach ((byte[] result, int length, long currentAddress, long nextAddress) in iter.GetAsyncEnumerable())
-            {
-                if (Different(result, staticEntry))
-                    throw new Exception("Invalid entry found");
-                log.TruncateUntilPageStart(iter.NextAddress);
-            }
         }
 
         static void ReportThread()
