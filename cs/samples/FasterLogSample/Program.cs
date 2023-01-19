@@ -3,15 +3,59 @@
 
 using System;
 using System.IO;
+using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Threading;
 using System.Collections.Generic;
 using FASTER.core;
+using System.Linq;
 using Newtonsoft.Json;
 
 namespace FasterLogSample
 {
     using Value = Dictionary<string, string>;
+
+    public enum OtelType : byte
+    {
+        Metric,
+        Log,
+        Span
+    }
+
+    public enum ValueType : byte
+    {
+        String,
+        Int,
+        Uint,
+        Float,
+        Bool,
+        Null
+    }
+
+    public static class StringExtension
+    {
+        public static OtelType ToOtelType(this string s) =>
+            s switch
+            {
+                "Metric" => OtelType.Metric,
+                "Log" => OtelType.Log,
+                "Span" => OtelType.Span,
+                _ => throw new Exception("invalid OtelType string"),
+            };
+
+        public static ValueType ToValueType(this string s) =>
+            s switch
+            {
+                "String" => ValueType.String,
+                "Int" => ValueType.Int,
+                "Uint" => ValueType.Uint,
+                "Float" => ValueType.Float,
+                "Bool" => ValueType.Bool,
+                "Null" => ValueType.Null,
+                _ => throw new Exception("invalid ValueType string"),
+            };
+    }
+
 
     public class Point
     {
@@ -19,6 +63,131 @@ namespace FasterLogSample
         public ulong timestamp;
         public Dictionary<string, Value> attributes;
         public Value[] values;
+
+        public static byte[] Serialize(Point point)
+        {
+            List<byte> bytes = new List<byte>();
+
+            var otelType = point.otel_type.ToOtelType();
+            var sourceId = Point.calculateSourceId(point.attributes);
+
+            bytes.Add(point.calcHeaderSizeAsByte());
+            bytes.Add((byte)otelType);
+
+            bytes.AddRange(Point.ulongToBigEndianBytes(sourceId));
+            bytes.AddRange(Point.ulongToBigEndianBytes(point.timestamp));
+
+            List<(ValueType, byte[])> serialized = new List<(ValueType, byte[])>();
+            foreach (var value in point.values)
+            {
+                var (type, valueBytes) = Point.serializeValueEntry(value);
+                bytes.Add((byte)type);
+                serialized.Add((type, valueBytes));
+                bytes.AddRange(Enumerable.Repeat((byte)0, 4)); // offset
+            }
+
+            for (int i = 0; i < serialized.Count; i++)
+            {
+                var loc = bytes.Count;
+                var locBytes = Point.uintToBigEndianBytes((uint)loc);
+                var start = Point.getEntryOffsetLoc(i);
+                for (int j = 0; j < locBytes.Length; j++)
+                {
+                    bytes[start + j] = locBytes[j];
+                }
+
+                var (type, valueBytes) = serialized[i];
+                if (type == ValueType.String)
+                {
+                    bytes.AddRange(Point.uintToBigEndianBytes((uint)valueBytes.Length));
+                }
+                bytes.AddRange(valueBytes);
+
+            }
+
+            return bytes.ToArray();
+        }
+
+        // TODO
+        // public static Point Deserialize(byte[] bytes) { }
+
+        private static ulong calculateSourceId(Dictionary<string, Value> attrs)
+        {
+            // TODO
+            return 0;
+        }
+
+        private byte calcHeaderSizeAsByte()
+        {
+            var sz = 0;
+            sz += 1; // header size
+            sz += 1; // otel type
+            sz += 8; // source id
+            sz += 8; // timestamp
+            sz += 5 * values.Length; // value (type, offset)s
+
+            if (sz > 255)
+            {
+                throw new Exception("Point too large");
+            }
+
+            return (byte)sz;
+        }
+
+        private static int getEntryOffsetLoc(int index)
+        {
+            return 1 /* header size */
+                + 1 /* otel type */
+                + 8 /* source id */
+                + 8 /* timestamp */
+                + index * 5 /* prev entries */
+                + 1 /* this entry's type */;
+        }
+
+        private static ValueType getValueType(Value val)
+        {
+            return val.Keys.First().ToValueType();
+        }
+
+
+        private static (ValueType, byte[]) serializeValueEntry(Value val)
+        {
+            var entry = val.First();
+            var valueType = entry.Key.ToValueType();
+            var valueBytes = valueType switch
+            {
+                ValueType.String => System.Text.Encoding.UTF8.GetBytes(entry.Value),
+                ValueType.Int => Point.intToBigEndianBytes(Int32.Parse(entry.Value)),
+                ValueType.Uint => Point.uintToBigEndianBytes(UInt32.Parse(entry.Value)),
+                ValueType.Float => BitConverter.GetBytes(double.Parse(entry.Value)),
+                ValueType.Bool => BitConverter.GetBytes(bool.Parse(entry.Value)),
+                _ => throw new Exception("Serializing null value not supported yet"),
+            };
+
+            return (valueType, valueBytes);
+        }
+
+        private static byte[] intToBigEndianBytes(int n)
+        {
+            var bytes = new byte[4];
+            BinaryPrimitives.WriteInt32BigEndian(bytes.AsSpan<byte>(), n);
+            return bytes;
+        }
+
+        private static byte[] uintToBigEndianBytes(uint n)
+        {
+            var bytes = new byte[4];
+            BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan<byte>(), n);
+            return bytes;
+        }
+
+        private static byte[] ulongToBigEndianBytes(ulong ul)
+        {
+            var bytes = new byte[8];
+            BinaryPrimitives.WriteUInt64BigEndian(bytes.AsSpan<byte>(), ul);
+            return bytes;
+        }
+
     }
 
     public class Program
