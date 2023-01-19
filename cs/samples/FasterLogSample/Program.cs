@@ -205,7 +205,6 @@ namespace FasterLogSample
         static void Main()
         {
             var points = LoadSamples("/home/fsolleza/data/telemetry-samples-small");
-            var serializedPoints = SerializeAll(points);
 
             // Populate entry being inserted
             for (int i = 0; i < entryLength; i++)
@@ -222,7 +221,7 @@ namespace FasterLogSample
             using (iter = log.Scan(log.BeginAddress, long.MaxValue))
             {
                 // Log writer thread: create as many as needed
-                new Thread(new ThreadStart(() => LogWriterThread(serializedPoints))).Start();
+                new Thread(new ThreadStart(() => LogWriterThread(points))).Start();
 
                 // Threads for iterator scan: create as many as needed
                 // new Thread(() => ScanThread()).Start();
@@ -294,14 +293,21 @@ namespace FasterLogSample
         }
 
 
-        static void LogWriterThread(List<byte[]> serializedPoints)
+        static void LogWriterThread(List<Point> points)
         {
             while (true)
             {
-                foreach (var point in serializedPoints)
+                foreach (var point in points)
                 {
-                    log.Enqueue(point);
-                    Interlocked.Increment(ref written);
+                    try
+                    {
+                        log.Enqueue(Point.Serialize(point));
+                        Interlocked.Increment(ref written);
+                    }
+                    catch (Exception)
+                    {
+                        // Some number overflow issues in serialization, ignore for now
+                    }
                 }
 
                 // TryEnqueue - can be used with throttling/back-off
