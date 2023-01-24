@@ -10,6 +10,7 @@ using System.Collections.Generic;
 using FASTER.core;
 using System.Linq;
 using Newtonsoft.Json;
+using MessagePack;
 
 namespace FasterLogSample
 {
@@ -56,12 +57,17 @@ namespace FasterLogSample
             };
     }
 
-
+    [MessagePackObject]
     public class Point
     {
+
+        [Key(0)]
         public string otel_type;
+        [Key(1)]
         public ulong timestamp;
+        [Key(2)]
         public Dictionary<string, Value> attributes;
+        [Key(3)]
         public Value[] values;
 
         public static byte[] Serialize(Point point)
@@ -195,7 +201,6 @@ namespace FasterLogSample
         // Entry length can be between 1 and ((1 << FasterLogSettings.PageSizeBits) - 4)
         const int entryLength = 1 << 10;
         static readonly byte[] staticEntry = new byte[entryLength];
-        static ulong written;
         static FasterLog log;
         static FasterLogScanIterator iter;
 
@@ -221,16 +226,10 @@ namespace FasterLogSample
             using (iter = log.Scan(log.BeginAddress, long.MaxValue))
             {
                 // Log writer thread: create as many as needed
-                new Thread(new ThreadStart(() => LogWriterThread(points))).Start();
+                var w = new Thread(new ThreadStart(() => LogWriterThread(points)));
 
-                // Threads for iterator scan: create as many as needed
-                // new Thread(() => ScanThread()).Start();
-
-                // Threads for reporting, commit
-                new Thread(new ThreadStart(ReportThread)).Start();
-                var t = new Thread(new ThreadStart(CommitThread));
-                t.Start();
-                t.Join();
+                w.Start();
+                w.Join();
             }
         }
 
@@ -295,104 +294,31 @@ namespace FasterLogSample
 
         static void LogWriterThread(List<Point> points)
         {
-            while (true)
+            Stopwatch sw = new();
+            sw.Start();
+
+            var count = 0;
+
+            for (int i = 0; i < 1; i++)
             {
                 foreach (var point in points)
                 {
                     try
                     {
-                        log.Enqueue(Point.Serialize(point));
-                        Interlocked.Increment(ref written);
+                        log.Enqueue(MessagePackSerializer.Serialize(point));
+                        count++;
                     }
                     catch (Exception)
                     {
                         // Some number overflow issues in serialization, ignore for now
                     }
                 }
-
-                // TryEnqueue - can be used with throttling/back-off
-                // Accepts byte[] and ReadOnlySpan<byte>
-                // while (!log.TryEnqueue(staticEntry, out _)) ;
-
-                // Synchronous blocking enqueue
-                // Accepts byte[] and ReadOnlySpan<byte>
-                // log.Enqueue(entry);
-
-                // Batched enqueue - batch must fit on one page
-                // Add this to class:
-                //   static readonly ReadOnlySpanBatch spanBatch = new ReadOnlySpanBatch(10);
-                // while (!log.TryEnqueue(spanBatch, out _)) ;
-            }
-        }
-
-        static void ScanThread()
-        {
-            byte[] result;
-
-            while (true)
-            {
-                while (!iter.GetNext(out result, out _, out _))
-                {
-                    if (iter.Ended) return;
-                    iter.WaitAsync().AsTask().GetAwaiter().GetResult();
-                }
-
-                // Memory pool variant:
-                // iter.GetNext(pool, out IMemoryOwner<byte> resultMem, out int length, out long currentAddress)
-
-                if (Different(result, staticEntry))
-                    throw new Exception("Invalid entry found");
-
-                // Example of random read from given address
-                // (result, _) = log.ReadAsync(iter.CurrentAddress).GetAwaiter().GetResult();
-
-                // Truncate until start of most recently read page
-                log.TruncateUntilPageStart(iter.NextAddress);
-
-                // Truncate log until after most recently read entry
-                // log.TruncateUntil(iter.NextAddress);
             }
 
-            // Example of recoverable (named) iterator:
-            // using (iter = log.Scan(log.BeginAddress, long.MaxValue, "foo"))
+            var throughput = 1000 * count / sw.ElapsedMilliseconds;
+            Console.WriteLine("Throughput {0} samples/sec", throughput);
         }
 
-        static void ReportThread()
-        {
-            long lastTime = 0;
-            long lastValue = log.TailAddress;
-            long lastIterValue = log.BeginAddress;
-            ulong lastWritten = 0;
-
-            Stopwatch sw = new();
-            sw.Start();
-
-            while (true)
-            {
-                Thread.Sleep(5000);
-
-                var nowTime = sw.ElapsedMilliseconds;
-                var nowValue = log.TailAddress;
-                var nowWritten = written;
-
-                var throughput = 1000 * (nowWritten - lastWritten) / (ulong)(nowTime - lastTime);
-
-                Console.WriteLine("Append Throughput: {0} samples/sec, {1} MB/sec, Tail: {2}",
-                    throughput, (nowValue - lastValue) / (1000 * (nowTime - lastTime)), nowValue);
-                lastValue = nowValue;
-                lastWritten = nowWritten;
-
-                // if (iter != null)
-                // {
-                //     var nowIterValue = iter.NextAddress;
-                //     Console.WriteLine("Scan Throughput: {0} MB/sec, Iter pos: {1}",
-                //         (nowIterValue - lastIterValue) / (1000 * (nowTime - lastTime)), nowIterValue);
-                //     lastIterValue = nowIterValue;
-                // }
-
-                lastTime = nowTime;
-            }
-        }
 
         static void CommitThread()
         {
