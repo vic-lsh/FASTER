@@ -61,13 +61,15 @@ namespace FasterLogSample
     public class Point
     {
 
-        [Key(0)]
+        // [Key(0)]
+        [IgnoreMember]
         public string otel_type;
-        [Key(1)]
+        [Key(0)]
         public ulong timestamp;
-        [Key(2)]
+        // [Key(2)]
+        [IgnoreMember]
         public Dictionary<string, Value> attributes;
-        [Key(3)]
+        [Key(1)]
         public Value[] values;
 
         public static byte[] Serialize(Point point)
@@ -209,7 +211,8 @@ namespace FasterLogSample
         /// </summary>
         static void Main()
         {
-            var points = LoadSamples("/home/fsolleza/data/telemetry-samples-small");
+            var points = LoadSamples("/home/fsolleza/data/telemetry-samples");
+            Console.WriteLine("Number of samples {}", points.Count);
 
             // Populate entry being inserted
             for (int i = 0; i < entryLength; i++)
@@ -225,17 +228,44 @@ namespace FasterLogSample
 
             using (iter = log.Scan(log.BeginAddress, long.MaxValue))
             {
-                // Log writer thread: create as many as needed
-                var w = new Thread(new ThreadStart(() => LogWriterThread(points)));
+                var numThreads = 1;
+                while (numThreads <= 16)
+                {
+                    Barrier barr = new Barrier(numThreads + 1);
+                    List<Thread> threads = new List<Thread>();
+                    int elemsPerThread = (points.Count - 1) / (numThreads + 1);
+                    for (int i = 0; i < numThreads; i++)
+                    {
+                        int start = i * elemsPerThread;
+                        int end = Math.Min(start + elemsPerThread, points.Count);
+                        var w = new Thread(new ThreadStart(() => LogWriterThread(barr, points, start, end)));
+                        w.Start();
+                        threads.Add(w);
+                    }
+                    barr.SignalAndWait();
+                    Stopwatch sw = new();
+                    sw.Start();
 
-                w.Start();
-                w.Join();
+                    barr.SignalAndWait();
+                    var elapsed = sw.ElapsedMilliseconds;
+
+                    foreach (var t in threads)
+                    {
+                        t.Join();
+                    }
+                    var throughput = 1000 * (ulong)points.Count / (ulong)elapsed;
+                    Console.WriteLine("Throughput for {0} threads: {1} samples/sec", numThreads, throughput);
+
+                    numThreads = numThreads * 2;
+                }
+
             }
         }
 
         static List<Point> LoadSamples(string filePath)
         {
             List<Point> points = new List<Point>();
+            var rand = new Random();
 
             using (StreamReader sr = new StreamReader(filePath))
             using (JsonTextReader reader = new JsonTextReader(sr)
@@ -255,8 +285,16 @@ namespace FasterLogSample
                     {
                         try
                         {
-                            var point = serializer.Deserialize<Point>(reader);
-                            points.Add(point);
+                            var shouldInclude = rand.NextDouble() < 0.05;
+                            if (shouldInclude)
+                            {
+                                var point = serializer.Deserialize<Point>(reader);
+                                points.Add(point);
+                                if (points.Count % 100000 == 0)
+                                {
+                                    Console.WriteLine("Loaded {0} samples", points.Count);
+                                }
+                            }
                         }
                         catch (Exception)
                         {
@@ -292,31 +330,14 @@ namespace FasterLogSample
         }
 
 
-        static void LogWriterThread(List<Point> points)
+        static void LogWriterThread(Barrier barr, List<Point> points, int start, int end)
         {
-            Stopwatch sw = new();
-            sw.Start();
-
-            var count = 0;
-
-            for (int i = 0; i < 1; i++)
+            barr.SignalAndWait();
+            for (var i = start; i < end; i++)
             {
-                foreach (var point in points)
-                {
-                    try
-                    {
-                        log.Enqueue(MessagePackSerializer.Serialize(point));
-                        count++;
-                    }
-                    catch (Exception)
-                    {
-                        // Some number overflow issues in serialization, ignore for now
-                    }
-                }
+                log.Enqueue(MessagePackSerializer.Serialize(points[i]));
             }
-
-            var throughput = 1000 * count / sw.ElapsedMilliseconds;
-            Console.WriteLine("Throughput {0} samples/sec", throughput);
+            barr.SignalAndWait();
         }
 
 
