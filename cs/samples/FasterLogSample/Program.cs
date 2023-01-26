@@ -9,7 +9,8 @@ using System.Threading;
 using System.Collections.Generic;
 using FASTER.core;
 using System.Linq;
-using Newtonsoft.Json;
+using System.Text.Json;
+// using Newtonsoft.Json;
 using MessagePack;
 
 namespace FasterLogSample
@@ -212,7 +213,12 @@ namespace FasterLogSample
         static void Main()
         {
             var points = LoadSamples("/home/fsolleza/data/telemetry-samples");
-            Console.WriteLine("Number of samples {}", points.Count);
+            Console.WriteLine("Number of samples {0}", points.Count);
+            var pointsSerialized = new List<byte[]>();
+            foreach (var point in points)
+            {
+                pointsSerialized.Add(MessagePackSerializer.Serialize(point));
+            }
 
             // Populate entry being inserted
             for (int i = 0; i < entryLength; i++)
@@ -228,9 +234,12 @@ namespace FasterLogSample
 
             using (iter = log.Scan(log.BeginAddress, long.MaxValue))
             {
+                new Thread(new ThreadStart(CommitThread)).Start();
+
                 var numThreads = 1;
-                while (numThreads <= 16)
+                while (numThreads <= 1)
                 {
+                    var startAddr = log.TailAddress;
                     Barrier barr = new Barrier(numThreads + 1);
                     List<Thread> threads = new List<Thread>();
                     int elemsPerThread = (points.Count - 1) / (numThreads + 1);
@@ -238,7 +247,7 @@ namespace FasterLogSample
                     {
                         int start = i * elemsPerThread;
                         int end = Math.Min(start + elemsPerThread, points.Count);
-                        var w = new Thread(new ThreadStart(() => LogWriterThread(barr, points, start, end)));
+                        var w = new Thread(new ThreadStart(() => PreSerializedLogWriterThread(barr, pointsSerialized, 0, points.Count)));
                         w.Start();
                         threads.Add(w);
                     }
@@ -253,8 +262,12 @@ namespace FasterLogSample
                     {
                         t.Join();
                     }
-                    var throughput = 1000 * (ulong)points.Count / (ulong)elapsed;
-                    Console.WriteLine("Throughput for {0} threads: {1} samples/sec", numThreads, throughput);
+
+                    var endAddr = log.TailAddress;
+                    var throughputBytes = (ulong)(endAddr - startAddr) / ((ulong)elapsed / 1000);
+                    // var throughput = 1000 * ((ulong)points.Count / (ulong)elapsed);
+                    var throughput = (ulong)points.Count / ((ulong)elapsed / 1000);
+                    Console.WriteLine("Throughput for {0} threads: {1} samples/sec, {2} bytes/sec", numThreads, throughput, throughputBytes);
 
                     numThreads = numThreads * 2;
                 }
@@ -266,46 +279,68 @@ namespace FasterLogSample
         {
             List<Point> points = new List<Point>();
             var rand = new Random();
-
-            using (StreamReader sr = new StreamReader(filePath))
-            using (JsonTextReader reader = new JsonTextReader(sr)
+            var erred = 0;
+            foreach (string line in System.IO.File.ReadLines(filePath))
             {
-                SupportMultipleContent = true
-            })
-            {
-                var serializer = JsonSerializer.CreateDefault(new JsonSerializerSettings
+                try
                 {
-                    NullValueHandling = NullValueHandling.Ignore
-                });
-
-                var erred = 0;
-                while (reader.Read())
-                {
-                    if (reader.TokenType == JsonToken.StartObject)
+                    var shouldInclude = rand.NextDouble() < 0.15;
+                    if (shouldInclude)
                     {
-                        try
+                        var point = JsonSerializer.Deserialize<Point>(line);
+                        points.Add(point);
+                        if (points.Count % 100000 == 0)
                         {
-                            var shouldInclude = rand.NextDouble() < 0.05;
-                            if (shouldInclude)
-                            {
-                                var point = serializer.Deserialize<Point>(reader);
-                                points.Add(point);
-                                if (points.Count % 100000 == 0)
-                                {
-                                    Console.WriteLine("Loaded {0} samples", points.Count);
-                                }
-                            }
-                        }
-                        catch (Exception)
-                        {
-                            // Console.WriteLine("{0}", e);
-                            erred++;
+                            Console.WriteLine("loaded {0} samples", points.Count);
                         }
                     }
                 }
-
-                Console.WriteLine("Failed to read {0} samples", erred);
+                catch (Exception)
+                {
+                    erred++;
+                }
             }
+            Console.WriteLine("Failed to read {0} samples", erred);
+
+            // using (StreamReader sr = new StreamReader(filePath))
+            // using (JsonTextReader reader = new JsonTextReader(sr)
+            // {
+            //     SupportMultipleContent = true
+            // })
+            // {
+            //     var serializer = JsonSerializer.CreateDefault(new JsonSerializerSettings
+            //     {
+            //         NullValueHandling = NullValueHandling.Ignore
+            //     });
+
+            //     var erred = 0;
+            //     while (reader.Read())
+            //     {
+            //         if (reader.TokenType == JsonToken.StartObject)
+            //         {
+            //             try
+            //             {
+            //                 var shouldInclude = rand.NextDouble() < 0.05;
+            //                 if (shouldInclude)
+            //                 {
+            //                     var point = serializer.Deserialize<Point>(reader);
+            //                     points.Add(point);
+            //                     if (points.count % 100000 == 0)
+            //                     {
+            //                         console.writeline("loaded {0} samples", points.count);
+            //                     }
+            //                 }
+            //             }
+            //             catch (Exception)
+            //             {
+            //                 // Console.WriteLine("{0}", e);
+            //                 erred++;
+            //             }
+            //         }
+            //     }
+
+            //     Console.WriteLine("Failed to read {0} samples", erred);
+            // }
 
             return points;
         }
@@ -340,6 +375,20 @@ namespace FasterLogSample
             barr.SignalAndWait();
         }
 
+        static void PreSerializedLogWriterThread(Barrier barr, List<byte[]> points, int start, int end)
+        {
+            barr.SignalAndWait();
+            Stopwatch sw = new();
+            sw.Start();
+
+            for (var i = start; i < end; i++)
+            {
+                log.Enqueue(points[i]);
+            }
+            var throughput = (ulong)(points.Count) / ((ulong)sw.ElapsedMilliseconds / 1000);
+            Console.WriteLine("In thread throughput: {0}", throughput);
+            barr.SignalAndWait();
+        }
 
         static void CommitThread()
         {
