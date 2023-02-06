@@ -26,6 +26,13 @@
     <Optimize>true</Optimize>
     <OutputPath>bin\x64\Release\</OutputPath>
   </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)' == 'Flamegraph'">
+    <DefineConstants>TRACE;DEBUG</DefineConstants>
+    <DebugType>full</DebugType>
+    <DebugSymbols>true</DebugSymbols>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\x64\Release\</OutputPath>
+  </PropertyGroup>
 
   <ItemGroup>
     <None Include="App.config" />

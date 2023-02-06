@@ -9,8 +9,8 @@ using System.Threading;
 using System.Collections.Generic;
 using FASTER.core;
 using System.Linq;
-using System.Text.Json;
-// using Newtonsoft.Json;
+//using System.Text.Json;
+using Newtonsoft.Json;
 using MessagePack;
 
 namespace FasterLogSample
@@ -58,20 +58,20 @@ namespace FasterLogSample
             };
     }
 
-    [MessagePackObject]
+    //[MessagePackObject]
     public class Point
     {
 
         // [Key(0)]
-        [IgnoreMember]
-        public string otel_type;
-        [Key(0)]
-        public ulong timestamp;
+        //[IgnoreMember]
+        public string otel_type  { get; set; }
+        //[Key(0)]
+        public ulong timestamp  { get; set; }
         // [Key(2)]
-        [IgnoreMember]
-        public Dictionary<string, Value> attributes;
-        [Key(1)]
-        public Value[] values;
+        //[IgnoreMember]
+        public Dictionary<string, Value> attributes; // { get; set; }
+        //[Key(1)]
+        public Value[] values { get; set; }
 
         public static byte[] Serialize(Point point)
         {
@@ -90,6 +90,7 @@ namespace FasterLogSample
             foreach (var value in point.values)
             {
                 var (type, valueBytes) = Point.serializeValueEntry(value);
+                //var (type, valueBytes) = ValueAll.Serialize(value);
                 bytes.Add((byte)type);
                 serialized.Add((type, valueBytes));
                 bytes.AddRange(Enumerable.Repeat((byte)0, 4)); // offset
@@ -114,7 +115,9 @@ namespace FasterLogSample
 
             }
 
-            return bytes.ToArray();
+	    var arr = bytes.ToArray();
+	    //Console.WriteLine("Otel type: {0}, Serialized Size: {1}", point.otel_type,  arr.Count());
+	    return arr;
         }
 
         // TODO
@@ -166,8 +169,8 @@ namespace FasterLogSample
             var valueBytes = valueType switch
             {
                 ValueType.String => System.Text.Encoding.UTF8.GetBytes(entry.Value),
-                ValueType.Int => Point.intToBigEndianBytes(Int32.Parse(entry.Value)),
-                ValueType.Uint => Point.uintToBigEndianBytes(UInt32.Parse(entry.Value)),
+                ValueType.Int => Point.longToBigEndianBytes(long.Parse(entry.Value)),
+                ValueType.Uint => Point.ulongToBigEndianBytes(ulong.Parse(entry.Value)),
                 ValueType.Float => BitConverter.GetBytes(double.Parse(entry.Value)),
                 ValueType.Bool => BitConverter.GetBytes(bool.Parse(entry.Value)),
                 _ => throw new Exception("Serializing null value not supported yet"),
@@ -183,17 +186,24 @@ namespace FasterLogSample
             return bytes;
         }
 
+        private static byte[] longToBigEndianBytes(long n)
+        {
+            var bytes = new byte[8];
+            BinaryPrimitives.WriteInt64BigEndian(bytes.AsSpan<byte>(), n);
+            return bytes;
+        }
+
+        private static byte[] ulongToBigEndianBytes(ulong n)
+        {
+            var bytes = new byte[8];
+            BinaryPrimitives.WriteUInt64BigEndian(bytes.AsSpan<byte>(), n);
+            return bytes;
+        }
+
         private static byte[] uintToBigEndianBytes(uint n)
         {
             var bytes = new byte[4];
             BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan<byte>(), n);
-            return bytes;
-        }
-
-        private static byte[] ulongToBigEndianBytes(ulong ul)
-        {
-            var bytes = new byte[8];
-            BinaryPrimitives.WriteUInt64BigEndian(bytes.AsSpan<byte>(), ul);
             return bytes;
         }
 
@@ -215,10 +225,14 @@ namespace FasterLogSample
             var points = LoadSamples("/home/fsolleza/data/telemetry-samples");
             Console.WriteLine("Number of samples {0}", points.Count);
             var pointsSerialized = new List<byte[]>();
+	    ulong total_sz = 0;
             foreach (var point in points)
             {
-                pointsSerialized.Add(MessagePackSerializer.Serialize(point));
+		    var p = Point.Serialize(point);
+		    total_sz += (ulong)p.Count();
+                pointsSerialized.Add(p);
             }
+	    Console.WriteLine("Total bytes to write: {0}", total_sz);
 
             // Populate entry being inserted
             for (int i = 0; i < entryLength; i++)
@@ -227,14 +241,14 @@ namespace FasterLogSample
             }
 
             // Create settings to write logs and commits at specified local path
-            using var config = new FasterLogSettings("./FasterLogSample", deleteDirOnDispose: true);
+            using var config = new FasterLogSettings("./FasterLogSample", deleteDirOnDispose: false);
 
             // FasterLog will recover and resume if there is a previous commit found
             log = new FasterLog(config);
 
             using (iter = log.Scan(log.BeginAddress, long.MaxValue))
             {
-                new Thread(new ThreadStart(CommitThread)).Start();
+                //new Thread(new ThreadStart(CommitThread)).Start();
 
                 var numThreads = 1;
                 while (numThreads <= 1)
@@ -263,11 +277,11 @@ namespace FasterLogSample
                         t.Join();
                     }
 
-                    var endAddr = log.TailAddress;
-                    var throughputBytes = (ulong)(endAddr - startAddr) / ((ulong)elapsed / 1000);
-                    // var throughput = 1000 * ((ulong)points.Count / (ulong)elapsed);
-                    var throughput = (ulong)points.Count / ((ulong)elapsed / 1000);
-                    Console.WriteLine("Throughput for {0} threads: {1} samples/sec, {2} bytes/sec", numThreads, throughput, throughputBytes);
+                    //var endAddr = log.TailAddress;
+                    //var throughputBytes = (ulong)(endAddr - startAddr) / ((ulong)elapsed / 1000);
+                    //// var throughput = 1000 * ((ulong)points.Count / (ulong)elapsed);
+                    //var throughput = (ulong)points.Count / ((ulong)elapsed / 1000);
+                    //Console.WriteLine("Throughput for {0} threads: {1} samples/sec, {2} bytes/sec", numThreads, throughput, throughputBytes);
 
                     numThreads = numThreads * 2;
                 }
@@ -284,10 +298,10 @@ namespace FasterLogSample
             {
                 try
                 {
-                    var shouldInclude = rand.NextDouble() < 0.15;
+                    var shouldInclude = rand.NextDouble() < 0.10;
                     if (shouldInclude)
                     {
-                        var point = JsonSerializer.Deserialize<Point>(line);
+                        var point = JsonConvert.DeserializeObject<Point>(line);
                         points.Add(point);
                         if (points.Count % 100000 == 0)
                         {
@@ -297,6 +311,7 @@ namespace FasterLogSample
                 }
                 catch (Exception)
                 {
+		    Console.WriteLine("Failed to parse {0}", line);
                     erred++;
                 }
             }
@@ -379,14 +394,18 @@ namespace FasterLogSample
         {
             barr.SignalAndWait();
             Stopwatch sw = new();
+	    double total_bytes = 0.0;
             sw.Start();
-
             for (var i = start; i < end; i++)
             {
                 log.Enqueue(points[i]);
+		total_bytes += (double)points[i].Length;
             }
-            var throughput = (ulong)(points.Count) / ((ulong)sw.ElapsedMilliseconds / 1000);
-            Console.WriteLine("In thread throughput: {0}", throughput);
+	    var secs = sw.ElapsedMilliseconds / 1000.0;
+	    var sps = points.Count/secs;
+	    var mb = total_bytes / 1000000.0;
+	    var mbps = mb / secs;
+            Console.WriteLine("In thread total mb written: {0}, sps: {1}, mbps: {2}", mb, sps, mbps);
             barr.SignalAndWait();
         }
 
