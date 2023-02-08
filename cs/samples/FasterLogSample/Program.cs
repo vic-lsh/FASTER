@@ -64,9 +64,9 @@ namespace FasterLogSample
 
         // [Key(0)]
         //[IgnoreMember]
-        public string otel_type  { get; set; }
+        public string otel_type { get; set; }
         //[Key(0)]
-        public ulong timestamp  { get; set; }
+        public ulong timestamp { get; set; }
         // [Key(2)]
         //[IgnoreMember]
         public Dictionary<string, Value> attributes; // { get; set; }
@@ -115,9 +115,9 @@ namespace FasterLogSample
 
             }
 
-	    var arr = bytes.ToArray();
-	    //Console.WriteLine("Otel type: {0}, Serialized Size: {1}", point.otel_type,  arr.Count());
-	    return arr;
+            var arr = bytes.ToArray();
+            //Console.WriteLine("Otel type: {0}, Serialized Size: {1}", point.otel_type,  arr.Count());
+            return arr;
         }
 
         // TODO
@@ -225,14 +225,14 @@ namespace FasterLogSample
             var points = LoadSamples("/home/fsolleza/data/telemetry-samples");
             Console.WriteLine("Number of samples {0}", points.Count);
             var pointsSerialized = new List<byte[]>();
-	    ulong total_sz = 0;
+            ulong total_sz = 0;
             foreach (var point in points)
             {
-		    var p = Point.Serialize(point);
-		    total_sz += (ulong)p.Count();
+                var p = Point.Serialize(point);
+                total_sz += (ulong)p.Count();
                 pointsSerialized.Add(p);
             }
-	    Console.WriteLine("Total bytes to write: {0}", total_sz);
+            Console.WriteLine("Total bytes to write: {0}", total_sz);
 
             // Populate entry being inserted
             for (int i = 0; i < entryLength; i++)
@@ -311,7 +311,7 @@ namespace FasterLogSample
                 }
                 catch (Exception)
                 {
-		    Console.WriteLine("Failed to parse {0}", line);
+                    Console.WriteLine("Failed to parse {0}", line);
                     erred++;
                 }
             }
@@ -394,17 +394,17 @@ namespace FasterLogSample
         {
             barr.SignalAndWait();
             Stopwatch sw = new();
-	    double total_bytes = 0.0;
+            double total_bytes = 0.0;
             sw.Start();
             for (var i = start; i < end; i++)
             {
                 log.Enqueue(points[i]);
-		total_bytes += (double)points[i].Length;
+                total_bytes += (double)points[i].Length;
             }
-	    var secs = sw.ElapsedMilliseconds / 1000.0;
-	    var sps = points.Count/secs;
-	    var mb = total_bytes / 1000000.0;
-	    var mbps = mb / secs;
+            var secs = sw.ElapsedMilliseconds / 1000.0;
+            var sps = points.Count / secs;
+            var mb = total_bytes / 1000000.0;
+            var mbps = mb / secs;
             Console.WriteLine("In thread total mb written: {0}, sps: {1}, mbps: {2}", mb, sps, mbps);
             barr.SignalAndWait();
         }
