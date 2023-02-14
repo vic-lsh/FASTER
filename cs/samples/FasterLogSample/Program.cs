@@ -234,14 +234,9 @@ namespace FasterLogSample
             }
             Console.WriteLine("Total bytes to write: {0}", total_sz);
 
-            // Populate entry being inserted
-            for (int i = 0; i < entryLength; i++)
-            {
-                staticEntry[i] = (byte)i;
-            }
-
             // Create settings to write logs and commits at specified local path
             using var config = new FasterLogSettings("./FasterLogSample", deleteDirOnDispose: false);
+            config.MemorySize = 1L << 33;
 
             // FasterLog will recover and resume if there is a previous commit found
             log = new FasterLog(config);
@@ -250,42 +245,36 @@ namespace FasterLogSample
             {
                 //new Thread(new ThreadStart(CommitThread)).Start();
 
-                var numThreads = 1;
-                while (numThreads <= 1)
+
+                Stopwatch sw = new();
+                double total_bytes = 0.0;
+                long last_ms = 0;
+                var written = 0;
+                var last_written = 0;
+                double last_total_bytes = 0;
+                sw.Start();
+                var duration_ms = 5000;
+                while (true)
                 {
-                    var startAddr = log.TailAddress;
-                    Barrier barr = new Barrier(numThreads + 1);
-                    List<Thread> threads = new List<Thread>();
-                    int elemsPerThread = (points.Count - 1) / (numThreads + 1);
-                    for (int i = 0; i < numThreads; i++)
+                    foreach (var point in pointsSerialized)
                     {
-                        int start = i * elemsPerThread;
-                        int end = Math.Min(start + elemsPerThread, points.Count);
-                        var w = new Thread(new ThreadStart(() => PreSerializedLogWriterThread(barr, pointsSerialized, 0, points.Count)));
-                        w.Start();
-                        threads.Add(w);
+                        log.Enqueue(point);
+                        total_bytes += (double)point.Length;
+                        written++;
+                        var now = sw.ElapsedMilliseconds;
+                        if (now - last_ms > duration_ms)
+                        {
+                            var secs = (now - last_ms) / 1000.0;
+                            var sps = (written - last_written) / secs;
+                            var mb = (total_bytes - last_total_bytes) / 1000000.0;
+                            var mbps = mb / secs;
+                            Console.WriteLine("In thread total mb written: {0}, sps: {1}, mbps: {2}, secs: {3}", mb, sps, mbps, secs);
+                            last_ms = now;
+                            last_total_bytes = total_bytes;
+                            last_written = written;
+                        }
                     }
-                    barr.SignalAndWait();
-                    Stopwatch sw = new();
-                    sw.Start();
-
-                    barr.SignalAndWait();
-                    var elapsed = sw.ElapsedMilliseconds;
-
-                    foreach (var t in threads)
-                    {
-                        t.Join();
-                    }
-
-                    //var endAddr = log.TailAddress;
-                    //var throughputBytes = (ulong)(endAddr - startAddr) / ((ulong)elapsed / 1000);
-                    //// var throughput = 1000 * ((ulong)points.Count / (ulong)elapsed);
-                    //var throughput = (ulong)points.Count / ((ulong)elapsed / 1000);
-                    //Console.WriteLine("Throughput for {0} threads: {1} samples/sec, {2} bytes/sec", numThreads, throughput, throughputBytes);
-
-                    numThreads = numThreads * 2;
                 }
-
             }
         }
 
@@ -307,6 +296,11 @@ namespace FasterLogSample
                         {
                             Console.WriteLine("loaded {0} samples", points.Count);
                         }
+                        // if (points.Count == 1000000)
+                        if (points.Count == 500000)
+                        {
+                            break;
+                        }
                     }
                 }
                 catch (Exception)
@@ -316,46 +310,6 @@ namespace FasterLogSample
                 }
             }
             Console.WriteLine("Failed to read {0} samples", erred);
-
-            // using (StreamReader sr = new StreamReader(filePath))
-            // using (JsonTextReader reader = new JsonTextReader(sr)
-            // {
-            //     SupportMultipleContent = true
-            // })
-            // {
-            //     var serializer = JsonSerializer.CreateDefault(new JsonSerializerSettings
-            //     {
-            //         NullValueHandling = NullValueHandling.Ignore
-            //     });
-
-            //     var erred = 0;
-            //     while (reader.Read())
-            //     {
-            //         if (reader.TokenType == JsonToken.StartObject)
-            //         {
-            //             try
-            //             {
-            //                 var shouldInclude = rand.NextDouble() < 0.05;
-            //                 if (shouldInclude)
-            //                 {
-            //                     var point = serializer.Deserialize<Point>(reader);
-            //                     points.Add(point);
-            //                     if (points.count % 100000 == 0)
-            //                     {
-            //                         console.writeline("loaded {0} samples", points.count);
-            //                     }
-            //                 }
-            //             }
-            //             catch (Exception)
-            //             {
-            //                 // Console.WriteLine("{0}", e);
-            //                 erred++;
-            //             }
-            //         }
-            //     }
-
-            //     Console.WriteLine("Failed to read {0} samples", erred);
-            // }
 
             return points;
         }
