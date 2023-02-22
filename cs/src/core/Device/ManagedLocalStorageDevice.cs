@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -11,6 +12,17 @@ using System.Threading.Tasks;
 
 namespace FASTER.core
 {
+
+    struct StorageReq
+    {
+        public IntPtr sourceAddress;
+        public int segmentId;
+        public ulong destinationAddress;
+        public uint numBytesToWrite;
+        public DeviceIOCompletionCallback callback;
+        public object context;
+    }
+
     /// <summary>
     /// Managed device using .NET streams
     /// </summary>
@@ -26,6 +38,9 @@ namespace FASTER.core
         /// Number of pending reads on device
         /// </summary>
         private int numPending = 0;
+
+        // private BlockingCollection<StorageReq> reqs;
+        private ConcurrentQueue<StorageReq> reqs;
 
         private bool _disposed;
 
@@ -43,6 +58,10 @@ namespace FASTER.core
         {
             pool = new(1, 1);
             ThrottleLimit = 120;
+
+            // reqs = new BlockingCollection<StorageReq>(new ConcurrentQueue<StorageReq>(), 100000000);
+            reqs = new ConcurrentQueue<StorageReq>();
+            new Thread(() => BackgroundWriter()).Start();
 
             string path = new FileInfo(filename).Directory.FullName;
             if (!Directory.Exists(path))
@@ -211,7 +230,7 @@ namespace FASTER.core
                         return;
                     }
                 }
-               
+
                 try
                 {
                     numBytes = await readTask.ConfigureAwait(false);
@@ -265,149 +284,14 @@ namespace FASTER.core
                                       DeviceIOCompletionCallback callback,
                                       object context)
         {
-            Stream logWriteHandle = null;
-            AsyncPool<Stream> streampool = null;
-            uint errorCode = 0;
-            Task writeTask = default;
-            bool gotHandle;
-
-#if NETSTANDARD2_1 || NET
-            UnmanagedMemoryManager<byte> umm = default;
-#else
-            SectorAlignedMemory memory = default;
-#endif
-
-            HandleCapacity(segmentId);
-
-            try
+            reqs.Enqueue(new StorageReq()
             {
-                Interlocked.Increment(ref numPending);
-                streampool = GetOrAddHandle(segmentId).Item2;
-                gotHandle = streampool.TryGet(out logWriteHandle);
-                if (gotHandle)
-                {
-                    logWriteHandle.Seek((long)destinationAddress, SeekOrigin.Begin);
-#if NETSTANDARD2_1 || NET
-                    unsafe
-                    {
-                        umm = new UnmanagedMemoryManager<byte>((byte*)sourceAddress, (int)numBytesToWrite);
-                    }
-
-                    // FileStream.WriteAsync is not thread-safe hence need a lock here
-                    lock (this)
-                    {
-                        writeTask = logWriteHandle.WriteAsync(umm.Memory).AsTask();
-                    }
-#else
-                    memory = pool.Get((int)numBytesToWrite);
-                    unsafe
-                    {
-                        fixed (void* destination = memory.buffer)
-                        {
-                            Buffer.MemoryCopy((void*)sourceAddress, destination, numBytesToWrite, numBytesToWrite);
-                        }
-                    }
-                    // FileStream.WriteAsync is not thread-safe hence need a lock here
-                    lock (this)
-                    {
-                        writeTask = logWriteHandle.WriteAsync(memory.buffer, 0, (int)numBytesToWrite);
-                    }
-#endif
-                }
-            }
-            catch
-            {
-                Interlocked.Decrement(ref numPending);
-
-                // Perform pool returns and disposals
-#if !(NETSTANDARD2_1 || NET)
-                memory?.Return();
-#endif
-                if (logWriteHandle != null) streampool?.Return(logWriteHandle);
-
-                // Issue user callback
-                callback(uint.MaxValue, 0, context);
-                return;
-            }
-
-            _ = Task.Run(async () =>
-            {
-                if (!gotHandle)
-                {
-                    try
-                    {
-                        logWriteHandle = await streampool.GetAsync().ConfigureAwait(false);
-                        logWriteHandle.Seek((long)destinationAddress, SeekOrigin.Begin);
-#if NETSTANDARD2_1 || NET
-                        unsafe
-                        {
-                            umm = new UnmanagedMemoryManager<byte>((byte*)sourceAddress, (int)numBytesToWrite);
-                        }
-
-                        // FileStream.WriteAsync is not thread-safe hence need a lock here
-                        lock (this)
-                        {
-                            writeTask = logWriteHandle.WriteAsync(umm.Memory).AsTask();
-                        }
-#else
-                        memory = pool.Get((int)numBytesToWrite);
-                        unsafe
-                        {
-                            fixed (void* destination = memory.buffer)
-                            {
-                                Buffer.MemoryCopy((void*)sourceAddress, destination, numBytesToWrite, numBytesToWrite);
-                            }
-                        }
-                        // FileStream.WriteAsync is not thread-safe hence need a lock here
-                        lock (this)
-                        {
-                            writeTask = logWriteHandle.WriteAsync(memory.buffer, 0, (int)numBytesToWrite);
-                        }
-#endif
-                    }
-                    catch
-                    {
-                        Interlocked.Decrement(ref numPending);
-
-                        // Perform pool returns and disposals
-#if !(NETSTANDARD2_1 || NET)
-                        memory?.Return();
-#endif
-                        if (logWriteHandle != null) streampool?.Return(logWriteHandle);
-
-                        // Issue user callback
-                        callback(uint.MaxValue, 0, context);
-                        return;
-                    }
-                }
-
-                try
-                {
-                    await writeTask.ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    if (ex.InnerException != null && ex.InnerException is IOException ioex)
-                        errorCode = (uint)(ioex.HResult & 0x0000FFFF);
-                    else
-                        errorCode = uint.MaxValue;
-                    numBytesToWrite = 0;
-                }
-                finally
-                {
-                    Interlocked.Decrement(ref numPending);
-
-                    // Perform pool returns and disposals
-#if !(NETSTANDARD2_1 || NET)
-                    memory?.Return();
-#endif
-                    // Sequentialize all writes to same handle
-                    await ((FileStream)logWriteHandle).FlushAsync().ConfigureAwait(false);
-                    streampool?.Return(logWriteHandle);
-
-                    // Issue user callback
-                    callback(errorCode, numBytesToWrite, context);
-                }
+                sourceAddress = sourceAddress,
+                segmentId = segmentId,
+                destinationAddress = destinationAddress,
+                numBytesToWrite = numBytesToWrite,
+                callback = callback,
+                context = context
             });
         }
 
@@ -425,7 +309,8 @@ namespace FASTER.core
             try
             {
                 File.Delete(GetSegmentName(segment));
-            } catch { }
+            }
+            catch { }
         }
 
         /// <summary>
@@ -478,7 +363,7 @@ namespace FASTER.core
 
         private static uint GetSectorSize(string filename)
         {
-         if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             {
                 Debug.WriteLine("Assuming 512 byte sector alignment for disk with file " + filename);
                 return 512;
@@ -570,6 +455,184 @@ namespace FASTER.core
         {
             logHandle.SetLength(size);
             return true;
+        }
+
+        private void BackgroundWriter()
+        {
+            while (true)
+            {
+                StorageReq req;
+                if (reqs.TryDequeue(out req))
+                {
+                    WriteInternal(req.sourceAddress, req.segmentId, req.destinationAddress, req.numBytesToWrite, req.callback, req.context);
+
+                }
+            }
+        }
+
+        private void WriteInternal(IntPtr sourceAddress,
+                                      int segmentId,
+                                      ulong destinationAddress,
+                                      uint numBytesToWrite,
+                                      DeviceIOCompletionCallback callback,
+                                      object context)
+        {
+            Stream logWriteHandle = null;
+            AsyncPool<Stream> streampool = null;
+            uint errorCode = 0;
+            // Task writeTask = default;
+            bool gotHandle;
+
+
+#if NETSTANDARD2_1 || NET
+            UnmanagedMemoryManager<byte> umm = default;
+#else
+                         SectorAlignedMemory memory = default;
+#endif
+
+            HandleCapacity(segmentId);
+
+            try
+            {
+                Interlocked.Increment(ref numPending);
+                streampool = GetOrAddHandle(segmentId).Item2;
+                gotHandle = streampool.TryGet(out logWriteHandle);
+                if (gotHandle)
+                {
+                    logWriteHandle.Seek((long)destinationAddress, SeekOrigin.Begin);
+#if NETSTANDARD2_1 || NET
+                    unsafe
+                    {
+                        umm = new UnmanagedMemoryManager<byte>((byte*)sourceAddress, (int)numBytesToWrite);
+                    }
+
+
+                    // FileStream.WriteAsync is not thread-safe hence need a lock here
+                    lock (this)
+                    {
+                        // writeTask = logWriteHandle.WriteAsync(umm.Memory).AsTask();
+                        logWriteHandle.Write(umm.Memory.Span);
+                        logWriteHandle.Flush();
+                    }
+#else
+                                 memory = pool.Get((int)numBytesToWrite);
+                                 unsafe
+                                 {
+                                     fixed (void* destination = memory.buffer)
+                                     {
+                                         Buffer.MemoryCopy((void*)sourceAddress, destination, numBytesToWrite, numBytesToWrite);
+                                     }
+                                 }
+                                 // FileStream.WriteAsync is not thread-safe hence need a lock here
+                                 lock (this)
+                                 {
+                                     writeTask = logWriteHandle.WriteAsync(memory.buffer, 0, (int)numBytesToWrite);
+                                 }
+#endif
+                }
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine("{0} Exception caught.", e);
+                Interlocked.Decrement(ref numPending);
+
+                // Perform pool returns and disposals
+#if !(NETSTANDARD2_1 || NET)
+                             memory?.Return();
+#endif
+                if (logWriteHandle != null) streampool?.Return(logWriteHandle);
+
+                // Issue user callback
+                callback(uint.MaxValue, 0, context);
+                return;
+            }
+
+            _ = Task.Run(async () =>
+            {
+                if (!gotHandle)
+                {
+                    try
+                    {
+                        logWriteHandle = await streampool.GetAsync().ConfigureAwait(false);
+                        logWriteHandle.Seek((long)destinationAddress, SeekOrigin.Begin);
+#if NETSTANDARD2_1 || NET
+                        unsafe
+                        {
+                            umm = new UnmanagedMemoryManager<byte>((byte*)sourceAddress, (int)numBytesToWrite);
+                        }
+
+                        // FileStream.WriteAsync is not thread-safe hence need a lock here
+                        lock (this)
+                        {
+                            // writeTask = logWriteHandle.WriteAsync(umm.Memory).AsTask();
+                            logWriteHandle.Write(umm.Memory.Span);
+                            logWriteHandle.Flush();
+                        }
+#else
+                                     memory = pool.Get((int)numBytesToWrite);
+                                     unsafe
+                                     {
+                                         fixed (void* destination = memory.buffer)
+                                         {
+                                             Buffer.MemoryCopy((void*)sourceAddress, destination, numBytesToWrite, numBytesToWrite);
+                                         }
+                                     }
+                                     // FileStream.WriteAsync is not thread-safe hence need a lock here
+                                     lock (this)
+                                     {
+                                         writeTask = logWriteHandle.WriteAsync(memory.buffer, 0, (int)numBytesToWrite);
+                                     }
+#endif
+                    }
+                    catch
+                    {
+                        Interlocked.Decrement(ref numPending);
+
+                        // Perform pool returns and disposals
+#if !(NETSTANDARD2_1 || NET)
+                                     memory?.Return();
+#endif
+                        if (logWriteHandle != null) streampool?.Return(logWriteHandle);
+
+                        // Issue user callback
+                        callback(uint.MaxValue, 0, context);
+                        return;
+                    }
+                }
+
+                try
+                {
+                    if (gotHandle)
+                    {
+                        // await writeTask.ConfigureAwait(false);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine("{0} Exception caught.", ex);
+                    if (ex.InnerException != null && ex.InnerException is IOException ioex)
+                        errorCode = (uint)(ioex.HResult & 0x0000FFFF);
+                    else
+                        errorCode = uint.MaxValue;
+                    numBytesToWrite = 0;
+                }
+                finally
+                {
+                    Interlocked.Decrement(ref numPending);
+
+                    // Perform pool returns and disposals
+#if !(NETSTANDARD2_1 || NET)
+                                 memory?.Return();
+#endif
+                    // Sequentialize all writes to same handle
+                    // await ((FileStream)logWriteHandle).FlushAsync().ConfigureAwait(false);
+                    // ((FileStream)logWriteHandle).Flush();
+                    streampool?.Return(logWriteHandle);
+
+                    // Issue user callback
+                    callback(errorCode, numBytesToWrite, context);
+                }
+            });
         }
     }
 }
