@@ -7,6 +7,7 @@ using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Threading;
 using System.Collections.Generic;
+using K4os.Compression.LZ4;
 using FASTER.core;
 using System.Linq;
 //using System.Text.Json;
@@ -211,11 +212,10 @@ namespace FasterLogSample
 
     public class Program
     {
-        // Entry length can be between 1 and ((1 << FasterLogSettings.PageSizeBits) - 4)
-        const int entryLength = 1 << 10;
-        static readonly byte[] staticEntry = new byte[entryLength];
+        const int sampleBatchSize = 1 << 20;
+        const int compressedBatchSize = 1 << 22;
+
         static FasterLog log;
-        static FasterLogScanIterator iter;
 
         /// <summary>
         /// Main program entry point
@@ -225,57 +225,134 @@ namespace FasterLogSample
             var points = LoadSamples("/home/fsolleza/data/telemetry-samples");
             Console.WriteLine("Number of samples {0}", points.Count);
             var pointsSerialized = new List<byte[]>();
-            ulong total_sz = 0;
+            ulong totalSize = 0;
             foreach (var point in points)
             {
                 var p = Point.Serialize(point);
-                total_sz += (ulong)p.Count();
+                totalSize += (ulong)p.Count();
                 pointsSerialized.Add(p);
             }
-            Console.WriteLine("Total bytes to write: {0}", total_sz);
+            Console.WriteLine("Total bytes to write: {0}", totalSize);
 
             // Create settings to write logs and commits at specified local path
             using var config = new FasterLogSettings("./FasterLogSample", deleteDirOnDispose: false);
-            config.MemorySize = 1L << 33;
+            config.MemorySize = 1L << 31;
 
             // FasterLog will recover and resume if there is a previous commit found
             log = new FasterLog(config);
+            WriteCompressed(pointsSerialized);
+        }
 
-            using (iter = log.Scan(log.BeginAddress, long.MaxValue))
+        static void WriteCompressed(List<byte[]> pointsSerialized)
+        {
+            double totalBytes = 0.0;
+            double lastTotalBytes = 0;
+            double uncompressedBytes = 0.0;
+            double lastUncompressedBytes = 0.0;
+            long lastMs = 0;
+            var samplesWritten = 0;
+            var lastWritten = 0;
+            var durationMs = 5000;
+
+            long compressMs = 0;
+            long compressCopyMs = 0;
+
+            var sampleBatch = new byte[sampleBatchSize];
+            var sampleBatchOffset = 0;
+            var compressedBatch = new byte[compressedBatchSize];
+            var compressedBatchOffset = 0;
+
+            Stopwatch sw = new();
+            sw.Start();
+
+            while (true)
             {
-                //new Thread(new ThreadStart(CommitThread)).Start();
-
-
-                Stopwatch sw = new();
-                double total_bytes = 0.0;
-                long last_ms = 0;
-                var written = 0;
-                var last_written = 0;
-                double last_total_bytes = 0;
-                sw.Start();
-                var duration_ms = 5000;
-                while (true)
+                foreach (var point in pointsSerialized)
                 {
-                    foreach (var point in pointsSerialized)
+                    if (sampleBatchOffset + point.Length <= sampleBatch.Length)
                     {
-                        log.Enqueue(point);
-                        total_bytes += (double)point.Length;
-                        written++;
-                        var now = sw.ElapsedMilliseconds;
-                        if (now - last_ms > duration_ms)
+                        Buffer.BlockCopy(point, 0, sampleBatch, sampleBatchOffset, point.Length);
+                        sampleBatchOffset += point.Length;
+                        samplesWritten++;
+                    }
+                    else
+                    {
+                        // compress
+                        Stopwatch cpStopWatch = new();
+                        cpStopWatch.Start();
+                        var target = new byte[LZ4Codec.MaximumOutputSize(sampleBatch.Length) + 4];
+                        var encodedLength = LZ4Codec.Encode(
+                            sampleBatch, 0, sampleBatch.Length,
+                            target, 4, target.Length - 4);
+                        compressMs += cpStopWatch.ElapsedMilliseconds;
+
+                        BinaryPrimitives.WriteUInt32BigEndian(target.AsSpan<byte>(), (uint)encodedLength);
+                        var writeLength = 4 + encodedLength;
+
+                        if (writeLength + compressedBatchOffset > compressedBatch.Length)
                         {
-                            var secs = (now - last_ms) / 1000.0;
-                            var sps = (written - last_written) / secs;
-                            var mb = (total_bytes - last_total_bytes) / 1000000.0;
+                            // compressed batch is full, write to FasterLog
+                            log.Enqueue(new ReadOnlySpan<byte>(compressedBatch, 0, compressedBatchOffset));
+                            compressedBatchOffset = 0;
+                        }
+
+                        uncompressedBytes += (double)sampleBatchOffset;
+                        totalBytes += (double)encodedLength;
+
+                        Buffer.BlockCopy(target, 0, compressedBatch, compressedBatchOffset, writeLength);
+                        compressedBatchOffset += writeLength;
+                        sampleBatchOffset = 0;
+
+                        var now = sw.ElapsedMilliseconds;
+                        if (now - lastMs > durationMs)
+                        {
+                            var secs = (now - lastMs) / 1000.0;
+                            var sps = (samplesWritten - lastWritten) / secs;
+                            var mb = (totalBytes - lastTotalBytes) / 1000000.0;
                             var mbps = mb / secs;
-                            Console.WriteLine("In thread total mb written: {0}, sps: {1}, mbps: {2}, secs: {3}", mb, sps, mbps, secs);
-                            last_ms = now;
-                            last_total_bytes = total_bytes;
-                            last_written = written;
+                            var mbUncompressed = (uncompressedBytes - lastUncompressedBytes) / 1000000.0;
+                            var mbpsUncompressed = mbUncompressed / secs;
+
+                            Console.WriteLine("In thread total mb written: {0}, sps: {1}, mbps: {2}, secs: {3}, mbps uncomp {4}, compress ms {5}, compcpy ms {6}",
+                                    mb, sps, mbps, secs, mbpsUncompressed, compressMs, compressCopyMs);
+                            lastMs = now;
+                            lastTotalBytes = totalBytes;
+                            lastUncompressedBytes = uncompressedBytes;
+                            lastWritten = samplesWritten;
+                            compressMs = 0;
+                            compressCopyMs = 0;
                         }
                     }
                 }
             }
+
+        }
+
+        static void WriteUncompressed(List<byte[]> pointsSerialized)
+        {
+            while (true)
+            {
+                foreach (var point in pointsSerialized)
+                {
+                    // log.Enqueue(point);
+                    // totalBytes += (double)point.Length;
+                    // samplesWritten++;
+
+                    // var now = sw.ElapsedMilliseconds;
+                    // if (now - lastMs > durationMs)
+                    // {
+                    //     var secs = (now - lastMs) / 1000.0;
+                    //     var sps = (samplesWritten - lastWritten) / secs;
+                    //     var mb = (totalBytes - lastTotalBytes) / 1000000.0;
+                    //     var mbps = mb / secs;
+                    //     Console.WriteLine("In thread total mb written: {0}, sps: {1}, mbps: {2}, secs: {3}", mb, sps, mbps, secs);
+                    //     lastMs = now;
+                    //     lastTotalBytes = totalBytes;
+                    //     lastWritten = samplesWritten;
+                    // }
+                }
+            }
+
         }
 
         static List<Point> LoadSamples(string filePath)
@@ -390,14 +467,6 @@ namespace FasterLogSample
         private static bool Different(ReadOnlySpan<byte> b1, ReadOnlySpan<byte> b2)
         {
             return !b1.SequenceEqual(b2);
-        }
-
-        private struct ReadOnlySpanBatch : IReadOnlySpanBatch
-        {
-            private readonly int batchSize;
-            public ReadOnlySpanBatch(int batchSize) => this.batchSize = batchSize;
-            public ReadOnlySpan<byte> Get(int index) => staticEntry;
-            public int TotalEntries() => batchSize;
         }
     }
 }
