@@ -22,7 +22,8 @@ namespace FasterLogSample
     {
         Metric,
         Log,
-        Span
+        Span,
+        PerfTrace
     }
 
     public enum ValueType : byte
@@ -43,7 +44,8 @@ namespace FasterLogSample
                 "Metric" => OtelType.Metric,
                 "Log" => OtelType.Log,
                 "Span" => OtelType.Span,
-                _ => throw new Exception("invalid OtelType string"),
+                "PerfTrace" => OtelType.PerfTrace,
+                _ => throw new Exception($"invalid OtelType string '{s}'"),
             };
 
         public static ValueType ToValueType(this string s) =>
