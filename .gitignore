@@ -203,4 +203,4 @@ cs/libdpr/.idea
 cs/**/BenchmarkDotNet.Artifacts/
 
 # FasterLog output
-FasterLogSample
+cs/samples/FasterLogSample/FasterLogSample
