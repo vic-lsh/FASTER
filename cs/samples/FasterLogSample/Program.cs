@@ -3,6 +3,7 @@
 
 using System;
 using System.IO;
+using System.Threading.Channels;
 using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Threading;
@@ -214,8 +215,10 @@ namespace FasterLogSample
 
     public class Program
     {
-        const int sampleBatchSize = 1 << 20;
+        const int sampleBatchSize = 1 << 22;
         const int compressedBatchSize = 1 << 22;
+
+        const double CyclesPerNanosecond = 2.7;
 
         static FasterLog log;
 
@@ -224,17 +227,7 @@ namespace FasterLogSample
         /// </summary>
         static void Main()
         {
-            var points = LoadSamples("/home/fsolleza/data/telemetry-samples");
-            Console.WriteLine("Number of samples {0}", points.Count);
-            var pointsSerialized = new List<byte[]>();
-            ulong totalSize = 0;
-            foreach (var point in points)
-            {
-                var p = Point.Serialize(point);
-                totalSize += (ulong)p.Count();
-                pointsSerialized.Add(p);
-            }
-            Console.WriteLine("Total bytes to write: {0}", totalSize);
+            var pointsSerialized = LoadSerializedSamplesWithTimestamp("/home/fsolleza/data/telemetry-samples");
 
             // Create settings to write logs and commits at specified local path
             using var config = new FasterLogSettings("./FasterLogSample", deleteDirOnDispose: false);
@@ -242,7 +235,97 @@ namespace FasterLogSample
 
             // FasterLog will recover and resume if there is a previous commit found
             log = new FasterLog(config);
-            WriteCompressed(pointsSerialized);
+            WriteReplay(pointsSerialized);
+        }
+
+
+        static void WriteReplay(List<(ulong, byte[])> pointsSerialized)
+        {
+            var ch = Channel.CreateBounded<byte[]>(20);
+
+            var consumer = new Thread(() => WriteThread(ch.Reader, pointsSerialized));
+            var producer = new Thread(() => BatchThread(ch.Writer, pointsSerialized));
+
+            consumer.Start();
+            producer.Start();
+        }
+
+        static void WriteThread(ChannelReader<byte[]> ch, List<(ulong, byte[])> pointsSerialized)
+        {
+            try
+            {
+                while (true)
+                {
+                    if (ch.TryRead(out byte[] batch))
+                    {
+                        var target = new byte[LZ4Codec.MaximumOutputSize(batch.Length) + 4];
+                        var encodedLength = LZ4Codec.Encode(
+                            batch, 0, batch.Length,
+                            target, 4, target.Length - 4);
+                        log.Enqueue(new ReadOnlySpan<byte>(target, 0, target.Length));
+                    }
+                }
+
+            }
+            catch (Exception)
+            {
+                // channel closed, terminate
+            }
+
+        }
+
+        static void BatchThread(ChannelWriter<byte[]> ch, List<(ulong, byte[])> pointsSerialized)
+        {
+            var sampleBatch = new byte[sampleBatchSize];
+            var sampleBatchOffset = 0;
+            var samplesBatched = 0;
+            var samplesWritten = 0;
+            var samplesDropped = 0;
+
+            var batchesCreated = 0;
+            var numWaits = 0;
+
+            var startCycles = (ulong)Stopwatch.GetTimestamp();
+            var firstTimestamp = pointsSerialized[0].Item1;
+
+            var idx = 0;
+            while (idx < pointsSerialized.Count())
+            {
+                var (ts, point) = pointsSerialized[idx];
+                if (sampleBatchOffset + point.Length > sampleBatch.Length)
+                {
+                    batchesCreated++;
+                    if (ch.TryWrite(sampleBatch))
+                    {
+                        samplesWritten += samplesBatched;
+                    }
+                    else
+                    {
+                        samplesDropped += samplesBatched;
+                    }
+                    sampleBatchOffset = 0;
+                    samplesBatched = 0;
+
+                    var elapsedCycles = (ulong)Stopwatch.GetTimestamp() - startCycles;
+                    var expectedCycles = ts - firstTimestamp;
+                    if (expectedCycles > elapsedCycles)
+                    {
+                        numWaits++;
+                        while (expectedCycles > (ulong)Stopwatch.GetTimestamp() - startCycles)
+                        {
+                        }
+                    }
+                }
+
+                Buffer.BlockCopy(point, 0, sampleBatch, sampleBatchOffset, point.Length);
+                sampleBatchOffset += point.Length;
+                samplesBatched++;
+                idx++;
+            }
+
+            Console.WriteLine("Batcher: written: {0}, dropped: {1}, batches {2}, waits: {3}",
+                    samplesWritten, samplesDropped, batchesCreated, numWaits);
+            ch.Complete();
         }
 
         static void WriteCompressed(List<byte[]> pointsSerialized)
@@ -370,16 +453,106 @@ namespace FasterLogSample
                     if (shouldInclude)
                     {
                         var point = JsonConvert.DeserializeObject<Point>(line);
-                        points.Add(point);
+                        if (point.otel_type == "PerfTrace")
+                        {
+                            points.Add(point);
+                            if (points.Count % 100000 == 0)
+                            {
+                                Console.WriteLine("loaded {0} samples", points.Count);
+                            }
+                            if (points.Count == 1000000)
+                            {
+                                break;
+                            }
+                        }
+                    }
+                }
+                catch (Exception)
+                {
+                    Console.WriteLine("Failed to parse {0}", line);
+                    erred++;
+                }
+            }
+            Console.WriteLine("Failed to read {0} samples", erred);
+
+            return points;
+        }
+
+        static List<byte[]> LoadSerializedSamples(string filePath)
+        {
+            var points = new List<byte[]>();
+            var rand = new Random();
+            var erred = 0;
+            foreach (string line in System.IO.File.ReadLines(filePath))
+            {
+                try
+                {
+                    // var shouldInclude = rand.NextDouble() < 0.10;
+                    if (true)
+                    {
+                        var point = JsonConvert.DeserializeObject<Point>(line);
+                        if (point.otel_type == "PerfTrace")
+                        {
+                            var sp = Point.Serialize(point);
+                            points.Add(sp);
+                            if (points.Count % 100000 == 0)
+                            {
+                                Console.WriteLine("loaded {0} samples", points.Count);
+                            }
+                            // if (points.Count == 1000000)
+                            // {
+                            //     break;
+                            // }
+                        }
+                    }
+                }
+                catch (Exception)
+                {
+                    Console.WriteLine("Failed to parse {0}", line);
+                    erred++;
+                }
+            }
+            Console.WriteLine("Failed to read {0} samples", erred);
+
+            return points;
+        }
+
+        static List<(ulong, byte[])> LoadSerializedSamplesWithTimestamp(string filePath)
+        {
+            ulong firstTimestamp = 0;
+            var points = new List<(ulong, byte[])>();
+            var rand = new Random();
+            var erred = 0;
+            foreach (string line in System.IO.File.ReadLines(filePath))
+            {
+                try
+                {
+                    var shouldInclude = rand.NextDouble() < 0.10;
+                    if (shouldInclude)
+                    {
+                        var point = JsonConvert.DeserializeObject<Point>(line);
+
+                        if (firstTimestamp == 0)
+                        {
+                            // first point
+                            firstTimestamp = point.timestamp;
+                        }
+
+                        // if (point.otel_type == "PerfTrace")
+                        // {
+                        var deltaInCycles = nanosToCycles(point.timestamp - firstTimestamp);
+                        var sp = Point.Serialize(point);
+                        points.Add((deltaInCycles, sp));
+
                         if (points.Count % 100000 == 0)
                         {
                             Console.WriteLine("loaded {0} samples", points.Count);
                         }
                         // if (points.Count == 1000000)
-                        if (points.Count == 500000)
-                        {
-                            break;
-                        }
+                        // {
+                        //     break;
+                        // }
+                        // }
                     }
                 }
                 catch (Exception)
@@ -395,23 +568,44 @@ namespace FasterLogSample
 
         static List<byte[]> SerializeAll(List<Point> points)
         {
-            List<byte[]> serialized = new List<byte[]>();
-
-            foreach (var p in points)
+            var pointsSerialized = new List<byte[]>();
+            ulong totalSize = 0;
+            foreach (var point in points)
             {
-                try
-                {
-                    serialized.Add(Point.Serialize(p));
-                }
-                catch (Exception)
-                {
-
-                }
+                var p = Point.Serialize(point);
+                totalSize += (ulong)p.Count();
+                pointsSerialized.Add(p);
             }
-
-            return serialized;
+            Console.WriteLine("Total bytes to write: {0}", totalSize);
+            return pointsSerialized;
         }
 
+        static List<(ulong, byte[])> SerializeAllWithTimestamps(List<Point> points)
+        {
+            var firstTimestamp = points[0].timestamp;
+            var pointsSerialized = new List<(ulong, byte[])>();
+            ulong totalSize = 0;
+            foreach (var point in points)
+            {
+                var ts = point.timestamp;
+                var deltaInCycles = nanosToCycles(ts - firstTimestamp);
+                var p = Point.Serialize(point);
+                totalSize += (ulong)p.Count();
+                pointsSerialized.Add((deltaInCycles, p));
+            }
+            Console.WriteLine("Total bytes to write: {0}", totalSize);
+            return pointsSerialized;
+        }
+
+        static ulong cyclesToNanos(ulong cycles)
+        {
+            return (ulong)((double)(cycles) / CyclesPerNanosecond);
+        }
+
+        static ulong nanosToCycles(ulong nanos)
+        {
+            return (ulong)((double)nanos * CyclesPerNanosecond);
+        }
 
         static void LogWriterThread(Barrier barr, List<Point> points, int start, int end)
         {
