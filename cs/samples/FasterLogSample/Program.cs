@@ -62,6 +62,38 @@ namespace FasterLogSample
             };
     }
 
+    class Serializer
+    {
+        public static byte[] IntToBigEndianBytes(int n)
+        {
+            var bytes = new byte[4];
+            BinaryPrimitives.WriteInt32BigEndian(bytes.AsSpan<byte>(), n);
+            return bytes;
+        }
+
+        public static byte[] LongToBigEndianBytes(long n)
+        {
+            var bytes = new byte[8];
+            BinaryPrimitives.WriteInt64BigEndian(bytes.AsSpan<byte>(), n);
+            return bytes;
+        }
+
+        public static byte[] UlongToBigEndianBytes(ulong n)
+        {
+            var bytes = new byte[8];
+            BinaryPrimitives.WriteUInt64BigEndian(bytes.AsSpan<byte>(), n);
+            return bytes;
+        }
+
+        public static byte[] UintToBigEndianBytes(uint n)
+        {
+            var bytes = new byte[4];
+            BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan<byte>(), n);
+            return bytes;
+        }
+
+    }
+
     //[MessagePackObject]
     public class Point
     {
@@ -87,8 +119,8 @@ namespace FasterLogSample
             bytes.Add(point.calcHeaderSizeAsByte());
             bytes.Add((byte)otelType);
 
-            bytes.AddRange(Point.ulongToBigEndianBytes(sourceId));
-            bytes.AddRange(Point.ulongToBigEndianBytes(point.timestamp));
+            bytes.AddRange(Serializer.UlongToBigEndianBytes(sourceId));
+            bytes.AddRange(Serializer.UlongToBigEndianBytes(point.timestamp));
 
             List<(ValueType, byte[])> serialized = new List<(ValueType, byte[])>();
             foreach (var value in point.values)
@@ -103,7 +135,7 @@ namespace FasterLogSample
             for (int i = 0; i < serialized.Count; i++)
             {
                 var loc = bytes.Count;
-                var locBytes = Point.uintToBigEndianBytes((uint)loc);
+                var locBytes = Serializer.UintToBigEndianBytes((uint)loc);
                 var start = Point.getEntryOffsetLoc(i);
                 for (int j = 0; j < locBytes.Length; j++)
                 {
@@ -113,7 +145,7 @@ namespace FasterLogSample
                 var (type, valueBytes) = serialized[i];
                 if (type == ValueType.String)
                 {
-                    bytes.AddRange(Point.uintToBigEndianBytes((uint)valueBytes.Length));
+                    bytes.AddRange(Serializer.UintToBigEndianBytes((uint)valueBytes.Length));
                 }
                 bytes.AddRange(valueBytes);
 
@@ -173,42 +205,14 @@ namespace FasterLogSample
             var valueBytes = valueType switch
             {
                 ValueType.String => System.Text.Encoding.UTF8.GetBytes(entry.Value),
-                ValueType.Int => Point.longToBigEndianBytes(long.Parse(entry.Value)),
-                ValueType.Uint => Point.ulongToBigEndianBytes(ulong.Parse(entry.Value)),
+                ValueType.Int => Serializer.LongToBigEndianBytes(long.Parse(entry.Value)),
+                ValueType.Uint => Serializer.UlongToBigEndianBytes(ulong.Parse(entry.Value)),
                 ValueType.Float => BitConverter.GetBytes(double.Parse(entry.Value)),
                 ValueType.Bool => BitConverter.GetBytes(bool.Parse(entry.Value)),
                 _ => throw new Exception("Serializing null value not supported yet"),
             };
 
             return (valueType, valueBytes);
-        }
-
-        private static byte[] intToBigEndianBytes(int n)
-        {
-            var bytes = new byte[4];
-            BinaryPrimitives.WriteInt32BigEndian(bytes.AsSpan<byte>(), n);
-            return bytes;
-        }
-
-        private static byte[] longToBigEndianBytes(long n)
-        {
-            var bytes = new byte[8];
-            BinaryPrimitives.WriteInt64BigEndian(bytes.AsSpan<byte>(), n);
-            return bytes;
-        }
-
-        private static byte[] ulongToBigEndianBytes(ulong n)
-        {
-            var bytes = new byte[8];
-            BinaryPrimitives.WriteUInt64BigEndian(bytes.AsSpan<byte>(), n);
-            return bytes;
-        }
-
-        private static byte[] uintToBigEndianBytes(uint n)
-        {
-            var bytes = new byte[4];
-            BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan<byte>(), n);
-            return bytes;
         }
 
     }
@@ -227,7 +231,7 @@ namespace FasterLogSample
         /// </summary>
         static void Main()
         {
-            var pointsSerialized = LoadSerializedSamplesWithTimestamp("/home/fsolleza/data/telemetry-samples");
+            var pointsSerialized = LoadSerializedSamplesWithTimestamp("/home/fsolleza/data/preserialized_samples_c#");
 
             // Create settings to write logs and commits at specified local path
             using var config = new FasterLogSettings("./FasterLogSample", deleteDirOnDispose: false);
@@ -519,16 +523,65 @@ namespace FasterLogSample
 
         static List<(ulong, byte[])> LoadSerializedSamplesWithTimestamp(string filePath)
         {
+            var points = new List<(ulong, byte[])>();
+            var ulongBytes = new byte[8];
+
+            using (BinaryReader reader = new BinaryReader(new FileStream(filePath, FileMode.Open)))
+            {
+                while (true)
+                {
+                    var bytesRead = reader.Read(ulongBytes, 0, 8);
+                    if (bytesRead == 0)
+                    {
+                        break;
+                    }
+                    if (bytesRead != 8)
+                    {
+                        throw new Exception("failed to read timestamp delta bytes");
+                    }
+                    var tsDelta = BinaryPrimitives.ReadUInt64BigEndian(ulongBytes.AsSpan<byte>());
+
+                    if (reader.Read(ulongBytes, 0, 8) != 8)
+                    {
+                        throw new Exception("failed to read serialized binary size bytes");
+                    }
+                    var serializationSize = BinaryPrimitives.ReadUInt64BigEndian(ulongBytes.AsSpan<byte>());
+
+                    var serialized = new byte[serializationSize];
+                    if (reader.Read(serialized, 0, (int)serializationSize) != (int)serializationSize)
+                    {
+                        throw new Exception("Failed to read the entire serialized sample");
+                    }
+                    points.Add((tsDelta, serialized));
+
+                    if (points.Count % 100000 == 0)
+                    {
+                        Console.WriteLine("loaded {0} samples", points.Count);
+                    }
+
+                }
+            }
+
+            Console.WriteLine("Read {0} samples", points.Count);
+
+            return points;
+        }
+
+        static List<(ulong, byte[])> SaveSerializedSamplesToFile(string filePath)
+        {
             ulong firstTimestamp = 0;
             var points = new List<(ulong, byte[])>();
             var rand = new Random();
             var erred = 0;
-            foreach (string line in System.IO.File.ReadLines(filePath))
+            var numRead = 0;
+            var outputFile = "serialized_samples";
+
+            File.Delete(outputFile);
+            using (var outfile = new FileStream(outputFile, FileMode.Append))
             {
-                try
+                foreach (string line in System.IO.File.ReadLines(filePath))
                 {
-                    var shouldInclude = rand.NextDouble() < 0.10;
-                    if (shouldInclude)
+                    try
                     {
                         var point = JsonConvert.DeserializeObject<Point>(line);
 
@@ -538,33 +591,34 @@ namespace FasterLogSample
                             firstTimestamp = point.timestamp;
                         }
 
-                        // if (point.otel_type == "PerfTrace")
-                        // {
                         var deltaInCycles = nanosToCycles(point.timestamp - firstTimestamp);
                         var sp = Point.Serialize(point);
-                        points.Add((deltaInCycles, sp));
 
-                        if (points.Count % 100000 == 0)
+                        var deltaBytes = Serializer.UlongToBigEndianBytes(deltaInCycles);
+                        outfile.Write(deltaBytes, 0, deltaBytes.Length);
+                        var serializedLenBytes = Serializer.UlongToBigEndianBytes((ulong)sp.Length);
+                        outfile.Write(serializedLenBytes, 0, serializedLenBytes.Length);
+                        outfile.Write(sp, 0, sp.Length);
+                        numRead++;
+
+                        if (numRead % 100000 == 0)
                         {
-                            Console.WriteLine("loaded {0} samples", points.Count);
+                            Console.WriteLine("loaded {0} samples", numRead);
                         }
-                        // if (points.Count == 1000000)
-                        // {
-                        //     break;
-                        // }
-                        // }
+                    }
+                    catch (Exception)
+                    {
+                        Console.WriteLine("Failed to parse {0}", line);
+                        erred++;
                     }
                 }
-                catch (Exception)
-                {
-                    Console.WriteLine("Failed to parse {0}", line);
-                    erred++;
-                }
             }
+
             Console.WriteLine("Failed to read {0} samples", erred);
 
             return points;
         }
+
 
         static List<byte[]> SerializeAll(List<Point> points)
         {
