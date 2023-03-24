@@ -256,6 +256,11 @@ namespace FasterLogSample
 
         static void WriteReplay(List<(ulong, byte[])> pointsSerialized)
         {
+            var batchBuf = new byte[sampleBatchSize];
+            var compressBuf = new byte[4 + LZ4Codec.MaximumOutputSize(sampleBatchSize)];
+
+            var batchOffset = 0;
+
             Stopwatch sw = new Stopwatch();
             sw.Start();
             var lastMs = sw.ElapsedMilliseconds;
@@ -281,8 +286,25 @@ namespace FasterLogSample
                 }
                 var sample = pointsSerialized[idx].Item2;
 
-                log.Enqueue(new ReadOnlySpan<byte>(sample, 0, sample.Length));
+                // log.Enqueue(new ReadOnlySpan<byte>(sample, 0, sample.Length));
                 count++;
+
+                if (batchOffset + sample.Length < batchBuf.Length)
+                {
+                    Buffer.BlockCopy(sample, 0, batchBuf, batchOffset, sample.Length);
+                    count++;
+                    batchOffset += sample.Length;
+                }
+                else
+                {
+                    // batch full, time to compress
+                    var encodedLength = LZ4Codec.Encode(
+                        batchBuf, 0, batchOffset,
+                        compressBuf, 4, compressBuf.Length - 4);
+                    log.Enqueue(new ReadOnlySpan<byte>(compressBuf, 0, compressBuf.Length));
+                    batchOffset = 0;
+                }
+
 
                 if (offset == batchSize)
                 {
