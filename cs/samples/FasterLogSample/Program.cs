@@ -234,11 +234,18 @@ namespace FasterLogSample
         /// </summary>
         static void Main()
         {
-            var pointsSerialized = LoadSerializedSamplesWithTimestamp("/home/fsolleza/data/preserialized_samples_c#");
+            Console.WriteLine("stopwatch resolution {0}", Stopwatch.IsHighResolution);
+            Console.WriteLine("stopwatch frequency {0}", Stopwatch.Frequency);
+            long nanosecPerTick = (1000L * 1000L * 1000L) / Stopwatch.Frequency;
+            Console.WriteLine("nanos per tick {0}", nanosecPerTick);
+
+
+            var pointsSerialized = LoadSerializedSamplesWithTimestamp("serialized_samples_saved");
+            // var pointsSerialized = SaveSerializedSamplesToFile("/home/fsolleza/data/telemetry-samples");
 
             // Create settings to write logs and commits at specified local path
             using var config = new FasterLogSettings("./FasterLogSample", deleteDirOnDispose: false);
-            config.MemorySize = 1L << 31;
+            config.MemorySize = 1L << 30;
             config.PageSize = 1L << 24;
 
             // FasterLog will recover and resume if there is a previous commit found
@@ -249,15 +256,77 @@ namespace FasterLogSample
 
         static void WriteReplay(List<(ulong, byte[])> pointsSerialized)
         {
-            var ch = Channel.CreateBounded<(byte[], int, int)>(20);
+            Stopwatch sw = new Stopwatch();
+            sw.Start();
+            var lastMs = sw.ElapsedMilliseconds;
+            var start = (ulong)Stopwatch.GetTimestamp();
 
-            var consumer = new Thread(() => WriteThread(ch.Reader, pointsSerialized));
-            var producer = new Thread(() => BatchThread(ch.Writer, pointsSerialized));
-            var monitor = new Thread(() => MonitorThread());
+            var batchSize = 100_000;
+            var count = 0;
+            var dropped = 0;
 
-            consumer.Start();
-            producer.Start();
-            monitor.Start();
+            var baseIdx = 0;
+            var offset = 0;
+            var firstTimestamp = pointsSerialized[baseIdx].Item1;
+            while (baseIdx + offset < pointsSerialized.Count())
+            {
+                var idx = baseIdx + offset;
+                if (idx == 2575366)
+                {
+                    Console.WriteLine("PERF STARTS");
+                }
+                if (idx == 32912623)
+                {
+                    Console.WriteLine("QUERY STARTS");
+                }
+                var sample = pointsSerialized[idx].Item2;
+
+                log.Enqueue(new ReadOnlySpan<byte>(sample, 0, sample.Length));
+                count++;
+
+                if (offset == batchSize)
+                {
+                    var elapsed = (ulong)Stopwatch.GetTimestamp() - start;
+                    var expected = pointsSerialized[idx].Item1 - firstTimestamp;
+
+                    if (expected > elapsed)
+                    {
+                        while (expected > (ulong)Stopwatch.GetTimestamp() - start)
+                        {
+                        }
+                    }
+                    else
+                    {
+                        while (pointsSerialized[baseIdx + offset].Item1 < elapsed)
+                        {
+                            offset++;
+                            dropped++;
+                        }
+                    }
+
+                    var now = sw.ElapsedMilliseconds;
+                    if (now - lastMs > 1000)
+                    {
+                        var rate = count / ((now - lastMs) / 1000);
+                        Console.WriteLine("rate: {0} samples/sec", rate);
+                        lastMs = now;
+                        count = 0;
+                    }
+
+                    baseIdx = baseIdx + offset;
+                    offset = 0;
+                }
+                else
+                {
+                    offset++;
+                }
+            }
+
+            Console.WriteLine("DONE, dropped {0}", dropped);
+
+            // var now = sw.ElapsedMilliseconds;
+            // var rate = count / ((now - lastMs) / 1000);
+            // Console.WriteLine("rate: {0} samples/sec", rate);
         }
 
         static void WriteThread(ChannelReader<(byte[], int, int)> ch, List<(ulong, byte[])> pointsSerialized)
@@ -594,6 +663,10 @@ namespace FasterLogSample
                     {
                         Console.WriteLine("loaded {0} samples", points.Count);
                     }
+                    // if (points.Count >= 2_000_000)
+                    // {
+                    //     break;
+                    // }
 
                 }
             }
@@ -627,10 +700,12 @@ namespace FasterLogSample
                             firstTimestamp = point.timestamp;
                         }
 
-                        var deltaInCycles = nanosToCycles(point.timestamp - firstTimestamp);
+                        var tsDelta = point.timestamp - firstTimestamp;
+                        // Console.WriteLine("sample {0} delta {1} delta cycles {2}", numRead, point.timestamp - firstTimestamp, deltaInCycles);
                         var sp = Point.Serialize(point);
+                        // points.Add((point.timestamp - firstTimestamp, sp));
 
-                        var deltaBytes = Serializer.UlongToBigEndianBytes(deltaInCycles);
+                        var deltaBytes = Serializer.UlongToBigEndianBytes(tsDelta);
                         outfile.Write(deltaBytes, 0, deltaBytes.Length);
                         var serializedLenBytes = Serializer.UlongToBigEndianBytes((ulong)sp.Length);
                         outfile.Write(serializedLenBytes, 0, serializedLenBytes.Length);
@@ -641,6 +716,10 @@ namespace FasterLogSample
                         {
                             Console.WriteLine("loaded {0} samples", numRead);
                         }
+                        // if (numRead == 1_000_000)
+                        // {
+                        //     break;
+                        // }
                     }
                     catch (Exception)
                     {
