@@ -225,6 +225,7 @@ namespace FasterLogSample
         const double CyclesPerNanosecond = 2.7;
 
         static long samplesGenerated = 0;
+        static long samplesDropped = 0;
         static long samplesWritten = 0;
 
         static FasterLog log;
@@ -246,101 +247,77 @@ namespace FasterLogSample
             // Create settings to write logs and commits at specified local path
             using var config = new FasterLogSettings("./FasterLogSample", deleteDirOnDispose: false);
             config.MemorySize = 1L << 30;
-            config.PageSize = 1L << 24;
+            // config.PageSize = 1L << 24;
 
             // FasterLog will recover and resume if there is a previous commit found
             log = new FasterLog(config);
+
+            // WriteCompressed(pointsSerialized);
+
+            new Thread(() => MonitorThread()).Start();
             WriteReplay(pointsSerialized);
         }
 
 
         static void WriteReplay(List<(ulong, byte[])> pointsSerialized)
         {
-            var batchBuf = new byte[sampleBatchSize];
-            var compressBuf = new byte[4 + LZ4Codec.MaximumOutputSize(sampleBatchSize)];
-
-            var batchOffset = 0;
-
             Stopwatch sw = new Stopwatch();
             sw.Start();
-            var lastMs = sw.ElapsedMilliseconds;
-            var start = (ulong)Stopwatch.GetTimestamp();
 
-            var batchSize = 100_000;
+            var lastMs = sw.ElapsedMilliseconds;
+            var startNs = (ulong)Stopwatch.GetTimestamp();
+
+            var batchSize = 10;
             var count = 0;
             var dropped = 0;
 
-            var baseIdx = 0;
-            var offset = 0;
-            var firstTimestamp = pointsSerialized[baseIdx].Item1;
-            while (baseIdx + offset < pointsSerialized.Count())
+            var firstTimestamp = pointsSerialized[0].Item1;
+
+            var idx = 0;
+            while (true)
             {
-                var idx = baseIdx + offset;
-                if (idx == 2575366)
+                var start = idx;
+                var end = Math.Min(start + batchSize, pointsSerialized.Count());
+                var endTimestamp = pointsSerialized[end - 1].Item1;
+                while (end < pointsSerialized.Count() && pointsSerialized[end].Item1 == endTimestamp)
                 {
-                    Console.WriteLine("PERF STARTS");
+                    end++;
                 }
-                if (idx == 32912623)
-                {
-                    Console.WriteLine("QUERY STARTS");
-                }
-                var sample = pointsSerialized[idx].Item2;
 
-                // log.Enqueue(new ReadOnlySpan<byte>(sample, 0, sample.Length));
-                count++;
-
-                if (batchOffset + sample.Length < batchBuf.Length)
+                for (var i = start; i < end; i++)
                 {
-                    Buffer.BlockCopy(sample, 0, batchBuf, batchOffset, sample.Length);
                     count++;
-                    batchOffset += sample.Length;
+                }
+                idx = end;
+                Interlocked.Add(ref samplesGenerated, end - start);
+
+                if (idx == pointsSerialized.Count())
+                {
+                    break;
+                }
+
+                var elapsedNs = (ulong)Stopwatch.GetTimestamp() - startNs;
+                var expected = pointsSerialized[idx].Item1 - firstTimestamp;
+
+                if (expected > elapsedNs)
+                {
+                    while (expected > (ulong)Stopwatch.GetTimestamp() - startNs)
+                    {
+                    }
                 }
                 else
                 {
-                    // batch full, time to compress
-                    var encodedLength = LZ4Codec.Encode(
-                        batchBuf, 0, batchOffset,
-                        compressBuf, 4, compressBuf.Length - 4);
-                    log.Enqueue(new ReadOnlySpan<byte>(compressBuf, 0, compressBuf.Length));
-                    batchOffset = 0;
-                }
-
-
-                if (offset == batchSize)
-                {
-                    var elapsed = (ulong)Stopwatch.GetTimestamp() - start;
-                    var expected = pointsSerialized[idx].Item1 - firstTimestamp;
-
-                    if (expected > elapsed)
+                    while (pointsSerialized[idx].Item1 < elapsedNs && idx < pointsSerialized.Count())
                     {
-                        while (expected > (ulong)Stopwatch.GetTimestamp() - start)
-                        {
-                        }
+                        idx++;
+                        dropped++;
                     }
-                    else
-                    {
-                        while (pointsSerialized[baseIdx + offset].Item1 < elapsed)
-                        {
-                            offset++;
-                            dropped++;
-                        }
-                    }
+                    Interlocked.Exchange(ref samplesDropped, dropped);
 
-                    var now = sw.ElapsedMilliseconds;
-                    if (now - lastMs > 1000)
+                    if (idx == pointsSerialized.Count())
                     {
-                        var rate = count / ((now - lastMs) / 1000);
-                        Console.WriteLine("rate: {0} samples/sec", rate);
-                        lastMs = now;
-                        count = 0;
+                        break;
                     }
-
-                    baseIdx = baseIdx + offset;
-                    offset = 0;
-                }
-                else
-                {
-                    offset++;
                 }
             }
 
@@ -436,6 +413,7 @@ namespace FasterLogSample
         {
             long lastWritten = 0;
             long lastGenerated = 0;
+            long lastDropped = 0;
 
             Stopwatch sw = new Stopwatch();
             sw.Start();
@@ -443,23 +421,27 @@ namespace FasterLogSample
 
             while (true)
             {
-                Thread.Sleep(5000);
+                Thread.Sleep(1000);
                 var written = Interlocked.Read(ref samplesWritten);
                 var generated = Interlocked.Read(ref samplesGenerated);
+                var dropped = Interlocked.Read(ref samplesDropped);
                 var now = sw.ElapsedMilliseconds;
 
                 var genRate = (generated - lastGenerated) / ((now - lastMs) / 1000);
                 var writtenRate = (written - lastWritten) / ((now - lastMs) / 1000);
+                var dropRate = (dropped - lastDropped) / ((now - lastMs) / 1000);
 
-                Console.WriteLine("gen rate: {0}, write rate: {1}", genRate, writtenRate);
+                Console.WriteLine("gen rate: {0}, write rate: {1}, drop rate: {2}",
+                        genRate, writtenRate, dropRate);
 
                 lastMs = now;
                 lastWritten = written;
                 lastGenerated = generated;
+                lastDropped = dropped;
             }
         }
 
-        static void WriteCompressed(List<byte[]> pointsSerialized)
+        static void WriteCompressed(List<(ulong, byte[])> pointsSerialized)
         {
             double totalBytes = 0.0;
             double lastTotalBytes = 0;
@@ -485,10 +467,10 @@ namespace FasterLogSample
             {
                 foreach (var point in pointsSerialized)
                 {
-                    if (sampleBatchOffset + point.Length <= sampleBatch.Length)
+                    if (sampleBatchOffset + point.Item2.Length <= sampleBatch.Length)
                     {
-                        Buffer.BlockCopy(point, 0, sampleBatch, sampleBatchOffset, point.Length);
-                        sampleBatchOffset += point.Length;
+                        Buffer.BlockCopy(point.Item2, 0, sampleBatch, sampleBatchOffset, point.Item2.Length);
+                        sampleBatchOffset += point.Item2.Length;
                         samplesWritten++;
                     }
                     else
@@ -544,28 +526,38 @@ namespace FasterLogSample
 
         }
 
-        static void WriteUncompressed(List<byte[]> pointsSerialized)
+        static void WriteUncompressed(List<(ulong, byte[])> pointsSerialized)
         {
+            double totalBytes = 0.0;
+            double lastTotalBytes = 0;
+            long lastMs = 0;
+            var samplesWritten = 0;
+            var lastWritten = 0;
+            var durationMs = 5000;
+
+            Stopwatch sw = new();
+            sw.Start();
+
             while (true)
             {
                 foreach (var point in pointsSerialized)
                 {
-                    // log.Enqueue(point);
-                    // totalBytes += (double)point.Length;
-                    // samplesWritten++;
+                    log.Enqueue(point.Item2);
+                    totalBytes += (double)point.Item2.Length;
+                    samplesWritten++;
 
-                    // var now = sw.ElapsedMilliseconds;
-                    // if (now - lastMs > durationMs)
-                    // {
-                    //     var secs = (now - lastMs) / 1000.0;
-                    //     var sps = (samplesWritten - lastWritten) / secs;
-                    //     var mb = (totalBytes - lastTotalBytes) / 1000000.0;
-                    //     var mbps = mb / secs;
-                    //     Console.WriteLine("In thread total mb written: {0}, sps: {1}, mbps: {2}, secs: {3}", mb, sps, mbps, secs);
-                    //     lastMs = now;
-                    //     lastTotalBytes = totalBytes;
-                    //     lastWritten = samplesWritten;
-                    // }
+                    var now = sw.ElapsedMilliseconds;
+                    if (now - lastMs > durationMs)
+                    {
+                        var secs = (now - lastMs) / 1000.0;
+                        var sps = (samplesWritten - lastWritten) / secs;
+                        var mb = (totalBytes - lastTotalBytes) / 1000000.0;
+                        var mbps = mb / secs;
+                        Console.WriteLine("In thread total mb written: {0}, sps: {1}, mbps: {2}, secs: {3}", mb, sps, mbps, secs);
+                        lastMs = now;
+                        lastTotalBytes = totalBytes;
+                        lastWritten = samplesWritten;
+                    }
                 }
             }
 
@@ -808,7 +800,7 @@ namespace FasterLogSample
             barr.SignalAndWait();
         }
 
-        static void PreSerializedLogWriterThread(Barrier barr, List<byte[]> points, int start, int end)
+        static void PreSerializedLogWriterThread(Barrier barr, List<(ulong, byte[])> points, int start, int end)
         {
             barr.SignalAndWait();
             Stopwatch sw = new();
@@ -816,8 +808,8 @@ namespace FasterLogSample
             sw.Start();
             for (var i = start; i < end; i++)
             {
-                log.Enqueue(points[i]);
-                total_bytes += (double)points[i].Length;
+                log.Enqueue(points[i].Item2);
+                total_bytes += (double)points[i].Item2.Length;
             }
             var secs = sw.ElapsedMilliseconds / 1000.0;
             var sps = points.Count / secs;
