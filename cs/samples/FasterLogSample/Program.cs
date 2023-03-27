@@ -163,6 +163,25 @@ namespace FasterLogSample
             return 0;
         }
 
+        public ulong GetSourceIdFromSerialized(byte[] serialized)
+        {
+            var sourceIdOffset = getSourceIdOffset();
+            if (serialized.Length < sourceIdOffset + 8)
+            {
+                throw new Exception("Corrupted serialized sample: sample does not contain a source ID");
+            }
+
+            var id = BinaryPrimitives.ReadUInt64BigEndian(new Span<byte>(serialized, sourceIdOffset, 8));
+            return id;
+        }
+
+        private static int getSourceIdOffset()
+        {
+            return 1 /* header size */
+                + 1 /* otel type */;
+            // source id is next
+        }
+
         public ulong GetTimestampFromSerialized(byte[] serialized)
         {
             var tsOffset = getTimestampOffset();
