@@ -126,7 +126,6 @@ namespace FasterLogSample
             foreach (var value in point.values)
             {
                 var (type, valueBytes) = Point.serializeValueEntry(value);
-                //var (type, valueBytes) = ValueAll.Serialize(value);
                 bytes.Add((byte)type);
                 serialized.Add((type, valueBytes));
                 bytes.AddRange(Enumerable.Repeat((byte)0, 4)); // offset
@@ -152,7 +151,6 @@ namespace FasterLogSample
             }
 
             var arr = bytes.ToArray();
-            //Console.WriteLine("Otel type: {0}, Serialized Size: {1}", point.otel_type,  arr.Count());
             return arr;
         }
 
@@ -163,6 +161,26 @@ namespace FasterLogSample
         {
             // TODO
             return 0;
+        }
+
+        public ulong GetTimestampFromSerialized(byte[] serialized)
+        {
+            var tsOffset = getTimestampOffset();
+            if (serialized.Length < tsOffset + 8)
+            {
+                throw new Exception("Corrupted serialized sample: sample does not contain a timestamp");
+            }
+
+            var ts = BinaryPrimitives.ReadUInt64BigEndian(new Span<byte>(serialized, tsOffset, 8));
+            return ts;
+        }
+
+        private static int getTimestampOffset()
+        {
+            return 1 /* header size */
+                + 1 /* otel type */
+                + 8 /* source id */;
+            // timestamp is next
         }
 
         private byte calcHeaderSizeAsByte()
