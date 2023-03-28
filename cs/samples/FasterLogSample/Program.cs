@@ -224,14 +224,7 @@ namespace FasterLogSample
 
         public static void UpdateSerializedPointTimestamp(byte[] serialized, ulong newTimestamp)
         {
-            var tsOffset = getTimestampOffset();
-            if (serialized.Length < tsOffset + 8)
-            {
-                throw new Exception("Corrupted serialized sample: sample does not contain a timestamp");
-            }
-
-            var newTsBytes = Serializer.UlongToBigEndianBytes(newTimestamp);
-            Buffer.BlockCopy(newTsBytes, 0, serialized, tsOffset, newTsBytes.Length);
+            BinaryPrimitives.WriteUInt64BigEndian(new Span<byte>(serialized, 10, 8), newTimestamp);
         }
 
         private static int getTimestampOffset()
