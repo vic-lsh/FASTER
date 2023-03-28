@@ -191,7 +191,7 @@ namespace FasterLogSample
             return ret;
         }
 
-        public ulong GetSourceIdFromSerialized(byte[] serialized)
+        public static ulong GetSourceIdFromSerialized(byte[] serialized)
         {
             var sourceIdOffset = getSourceIdOffset();
             if (serialized.Length < sourceIdOffset + 8)
@@ -210,7 +210,7 @@ namespace FasterLogSample
             // source id is next
         }
 
-        public ulong GetTimestampFromSerialized(byte[] serialized)
+        public static ulong GetTimestampFromSerialized(byte[] serialized)
         {
             var tsOffset = getTimestampOffset();
             if (serialized.Length < tsOffset + 8)
