@@ -222,6 +222,18 @@ namespace FasterLogSample
             return ts;
         }
 
+        public static void UpdateSerializedPointTimestamp(byte[] serialized, ulong newTimestamp)
+        {
+            var tsOffset = getTimestampOffset();
+            if (serialized.Length < tsOffset + 8)
+            {
+                throw new Exception("Corrupted serialized sample: sample does not contain a timestamp");
+            }
+
+            var newTsBytes = Serializer.UlongToBigEndianBytes(newTimestamp);
+            Buffer.BlockCopy(newTsBytes, 0, serialized, tsOffset, newTsBytes.Length);
+        }
+
         private static int getTimestampOffset()
         {
             return 1 /* header size */
@@ -412,6 +424,8 @@ namespace FasterLogSample
 
                 for (var i = start; i < end; i++)
                 {
+                    Point.UpdateSerializedPointTimestamp(pointsSerialized[i].Item2, (ulong)Stopwatch.GetTimestamp());
+
                     if (ch.TryWrite(pointsSerialized[i].Item2))
                     {
                         generated++;
