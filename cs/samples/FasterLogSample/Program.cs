@@ -569,7 +569,6 @@ namespace FasterLogSample
                     }
                 }
             }
-
         }
 
         static void WriteUncompressed(List<(ulong, byte[])> pointsSerialized)
@@ -761,9 +760,7 @@ namespace FasterLogSample
                         }
 
                         var tsDelta = point.timestamp - firstTimestamp;
-                        // Console.WriteLine("sample {0} delta {1} delta cycles {2}", numRead, point.timestamp - firstTimestamp, deltaInCycles);
                         var sp = Point.Serialize(point);
-                        // points.Add((point.timestamp - firstTimestamp, sp));
 
                         var deltaBytes = Serializer.UlongToBigEndianBytes(tsDelta);
                         outfile.Write(deltaBytes, 0, deltaBytes.Length);
@@ -792,77 +789,6 @@ namespace FasterLogSample
             Console.WriteLine("Failed to read {0} samples", erred);
 
             return points;
-        }
-
-
-        static List<byte[]> SerializeAll(List<Point> points)
-        {
-            var pointsSerialized = new List<byte[]>();
-            ulong totalSize = 0;
-            foreach (var point in points)
-            {
-                var p = Point.Serialize(point);
-                totalSize += (ulong)p.Count();
-                pointsSerialized.Add(p);
-            }
-            Console.WriteLine("Total bytes to write: {0}", totalSize);
-            return pointsSerialized;
-        }
-
-        static List<(ulong, byte[])> SerializeAllWithTimestamps(List<Point> points)
-        {
-            var firstTimestamp = points[0].timestamp;
-            var pointsSerialized = new List<(ulong, byte[])>();
-            ulong totalSize = 0;
-            foreach (var point in points)
-            {
-                var ts = point.timestamp;
-                var deltaInCycles = nanosToCycles(ts - firstTimestamp);
-                var p = Point.Serialize(point);
-                totalSize += (ulong)p.Count();
-                pointsSerialized.Add((deltaInCycles, p));
-            }
-            Console.WriteLine("Total bytes to write: {0}", totalSize);
-            return pointsSerialized;
-        }
-
-        static ulong cyclesToNanos(ulong cycles)
-        {
-            return (ulong)((double)(cycles) / CyclesPerNanosecond);
-        }
-
-        static ulong nanosToCycles(ulong nanos)
-        {
-            return (ulong)((double)nanos * CyclesPerNanosecond);
-        }
-
-        static void LogWriterThread(Barrier barr, List<Point> points, int start, int end)
-        {
-            barr.SignalAndWait();
-            for (var i = start; i < end; i++)
-            {
-                log.Enqueue(MessagePackSerializer.Serialize(points[i]));
-            }
-            barr.SignalAndWait();
-        }
-
-        static void PreSerializedLogWriterThread(Barrier barr, List<(ulong, byte[])> points, int start, int end)
-        {
-            barr.SignalAndWait();
-            Stopwatch sw = new();
-            double total_bytes = 0.0;
-            sw.Start();
-            for (var i = start; i < end; i++)
-            {
-                log.Enqueue(points[i].Item2);
-                total_bytes += (double)points[i].Item2.Length;
-            }
-            var secs = sw.ElapsedMilliseconds / 1000.0;
-            var sps = points.Count / secs;
-            var mb = total_bytes / 1000000.0;
-            var mbps = mb / secs;
-            Console.WriteLine("In thread total mb written: {0}, sps: {1}, mbps: {2}", mb, sps, mbps);
-            barr.SignalAndWait();
         }
 
         static void CommitThread()
