@@ -94,18 +94,14 @@ namespace FasterLogSample
 
     }
 
-    //[MessagePackObject]
     public class Point
     {
-        // [Key(0)]
-        //[IgnoreMember]
         public string otel_type { get; set; }
-        //[Key(0)]
+
         public ulong timestamp { get; set; }
-        // [Key(2)]
-        //[IgnoreMember]
-        public Dictionary<string, Value> attributes; // { get; set; }
-        //[Key(1)]
+
+        public Dictionary<string, Value> attributes;
+
         public Value[] values { get; set; }
 
         public static byte[] Serialize(Point point)
@@ -301,6 +297,7 @@ namespace FasterLogSample
         static long samplesGenerated = 0;
         static long samplesDropped = 0;
         static long samplesWritten = 0;
+        static ulong lastIngestAddress = 0;
 
         static FasterLog log;
 
@@ -318,8 +315,8 @@ namespace FasterLogSample
             var pointsSerialized = LoadSerializedSamplesWithTimestamp("serialized_samples_saved");
             // var pointsSerialized = SaveSerializedSamplesToFile("/home/fsolleza/data/telemetry-samples");
 
-            var sourceIds = GetUniqueSourceIds(pointsSerialized);
-            Console.WriteLine($"Unique source ids: {sourceIds.Count}");
+            var perfSources = GetPerfSourceIds(pointsSerialized);
+            Console.WriteLine($"Perf source ids: {perfSources.Count}");
 
             // Create settings to write logs and commits at specified local path
             using var config = new FasterLogSettings("./FasterLogSample", deleteDirOnDispose: false);
@@ -331,8 +328,13 @@ namespace FasterLogSample
 
             // WriteCompressed(pointsSerialized);
 
-            new Thread(() => MonitorThread()).Start();
-            WriteReplay(pointsSerialized);
+            var monitor = new Thread(() => MonitorThread());
+            var writer = new Thread(() => WriteReplay(pointsSerialized));
+
+            monitor.Start();
+            writer.Start();
+            monitor.Join();
+            writer.Join();
         }
 
 
@@ -352,8 +354,9 @@ namespace FasterLogSample
             var sampleBatch = new byte[sampleBatchSize];
             var sampleBatchOffset = 0;
             var samplesBatched = 0;
+            ulong prevLogicalAddress = 0;
 
-            var compressBuf = new byte[LZ4Codec.MaximumOutputSize(sampleBatchSize)];
+            var compressBuf = new byte[8 /* prev block logical addr */ + LZ4Codec.MaximumOutputSize(sampleBatchSize)];
 
             while (true)
             {
@@ -379,8 +382,14 @@ namespace FasterLogSample
                         {
                             var encodedLength = LZ4Codec.Encode(
                                 sampleBatch, 0, sampleBatchOffset,
-                                compressBuf, 4, compressBuf.Length - 4);
-                            log.Enqueue(new ReadOnlySpan<byte>(compressBuf, 0, encodedLength));
+                                compressBuf, 8, compressBuf.Length - 8);
+
+                            var prevAddrBytes = Serializer.UlongToBigEndianBytes(prevLogicalAddress);
+                            Buffer.BlockCopy(prevAddrBytes, 0, compressBuf, 0, prevAddrBytes.Length);
+
+                            prevLogicalAddress = (ulong)log.Enqueue(new ReadOnlySpan<byte>(compressBuf, 0, 8 + encodedLength));
+                            Interlocked.Exchange(ref lastIngestAddress, prevLogicalAddress);
+
                             Interlocked.Add(ref samplesWritten, samplesBatched);
                             samplesBatched = 0;
                             sampleBatchOffset = 0;
@@ -487,12 +496,14 @@ namespace FasterLogSample
                 var dropped = Interlocked.Read(ref samplesDropped);
                 var now = sw.ElapsedMilliseconds;
 
+                var lastAddr = Interlocked.Read(ref lastIngestAddress);
+
                 var genRate = (generated - lastGenerated) / ((now - lastMs) / 1000);
                 var writtenRate = (written - lastWritten) / ((now - lastMs) / 1000);
                 var dropRate = (dropped - lastDropped) / ((now - lastMs) / 1000);
 
-                Console.WriteLine("gen rate: {0}, write rate: {1}, drop rate: {2}",
-                        genRate, writtenRate, dropRate);
+                Console.WriteLine("gen rate: {0}, write rate: {1}, drop rate: {2}, lastaddr: {3}",
+                        genRate, writtenRate, dropRate, lastAddr);
 
                 lastMs = now;
                 lastWritten = written;
