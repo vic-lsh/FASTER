@@ -309,6 +309,9 @@ namespace FasterLogSample
             var pointsSerialized = LoadSerializedSamplesWithTimestamp("serialized_samples_saved");
             // var pointsSerialized = SaveSerializedSamplesToFile("/home/fsolleza/data/telemetry-samples");
 
+            var sourceIds = GetUniqueSourceIds(pointsSerialized);
+            Console.WriteLine($"Unique source ids: {sourceIds.Count}");
+
             // Create settings to write logs and commits at specified local path
             using var config = new FasterLogSettings("./FasterLogSample", deleteDirOnDispose: false);
             config.MemorySize = 1L << 30;
@@ -690,6 +693,8 @@ namespace FasterLogSample
             var points = new List<(ulong, byte[])>();
             var ulongBytes = new byte[8];
 
+            ulong totalSize = 0;
+
             using (BinaryReader reader = new BinaryReader(new FileStream(filePath, FileMode.Open)))
             {
                 while (true)
@@ -717,20 +722,18 @@ namespace FasterLogSample
                         throw new Exception("Failed to read the entire serialized sample");
                     }
                     points.Add((tsDelta, serialized));
+                    totalSize += (ulong)serialized.Length;
 
                     if (points.Count % 1000000 == 0)
                     {
                         Console.WriteLine("loaded {0} samples", points.Count);
                     }
-                    // if (points.Count >= 2_000_000)
-                    // {
-                    //     break;
-                    // }
 
                 }
             }
 
             Console.WriteLine("Read {0} samples", points.Count);
+            Console.WriteLine("Total size {0} ", totalSize);
 
             return points;
         }
@@ -778,9 +781,9 @@ namespace FasterLogSample
                         //     break;
                         // }
                     }
-                    catch (Exception)
+                    catch (Exception e)
                     {
-                        Console.WriteLine("Failed to parse {0}", line);
+                        Console.WriteLine("Failed to parse {0}, exp {1}", line, e);
                         erred++;
                     }
                 }
@@ -789,6 +792,18 @@ namespace FasterLogSample
             Console.WriteLine("Failed to read {0} samples", erred);
 
             return points;
+        }
+
+        static HashSet<ulong> GetUniqueSourceIds(List<(ulong, byte[])> pointsSerialized)
+        {
+            var sourceIds = new HashSet<ulong>();
+
+            foreach ((_, var pointBytes) in pointsSerialized)
+            {
+                sourceIds.Add(Point.GetSourceIdFromSerialized(pointBytes));
+            }
+
+            return sourceIds;
         }
 
         static void CommitThread()
