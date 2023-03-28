@@ -14,7 +14,6 @@ using FASTER.core;
 using System.Linq;
 //using System.Text.Json;
 using Newtonsoft.Json;
-using MessagePack;
 
 namespace FasterLogSample
 {
@@ -189,6 +188,11 @@ namespace FasterLogSample
             }
 
             return ret;
+        }
+
+        public static bool IsType(byte[] serialized, OtelType type)
+        {
+            return serialized[1] == (byte)type;
         }
 
         public static ulong GetSourceIdFromSerialized(byte[] serialized)
@@ -801,13 +805,16 @@ namespace FasterLogSample
             return points;
         }
 
-        static HashSet<ulong> GetUniqueSourceIds(List<(ulong, byte[])> pointsSerialized)
+        static HashSet<ulong> GetPerfSourceIds(List<(ulong, byte[])> pointsSerialized)
         {
             var sourceIds = new HashSet<ulong>();
 
             foreach ((_, var pointBytes) in pointsSerialized)
             {
-                sourceIds.Add(Point.GetSourceIdFromSerialized(pointBytes));
+                if (Point.IsType(pointBytes, OtelType.PerfTrace))
+                {
+                    sourceIds.Add(Point.GetSourceIdFromSerialized(pointBytes));
+                }
             }
 
             return sourceIds;
