@@ -543,14 +543,6 @@ namespace FasterLogSample
                 {
                     if (ch.TryRead(out var point))
                     {
-                        // log.Enqueue(point);
-                        // samplesBatched++;
-                        // if (samplesBatched == 1000)
-                        // {
-                        //     Interlocked.Add(ref samplesWritten, samplesBatched);
-                        //     samplesBatched = 0;
-                        // }
-
                         if (sampleBatchOffset + point.Length < sampleBatch.Length)
                         {
                             Buffer.BlockCopy(point, 0, sampleBatch, sampleBatchOffset, point.Length);
