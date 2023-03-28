@@ -5,6 +5,7 @@ using System;
 using System.IO;
 using System.Threading.Channels;
 using System.Buffers.Binary;
+using System.Text;
 using System.Diagnostics;
 using System.Threading;
 using System.Collections.Generic;
@@ -159,8 +160,36 @@ namespace FasterLogSample
 
         private static ulong calculateSourceId(Dictionary<string, Value> attrs)
         {
-            // TODO
-            return 0;
+            var stringIdentifier = attrsToString(attrs);
+            var strBytes = ASCIIEncoding.ASCII.GetBytes(stringIdentifier);
+            var hashBytes = System.Security.Cryptography.MD5.Create().ComputeHash(strBytes);
+
+            // take the first 8 bytes as the hash -- ignore the rest
+            var hash = BinaryPrimitives.ReadUInt64BigEndian(new Span<byte>(hashBytes, 0, 8));
+
+            return hash;
+        }
+
+        private static string attrsToString(Dictionary<string, Value> attrs)
+        {
+            var ret = "";
+
+            foreach (KeyValuePair<string, Value> kvp in attrs)
+            {
+                if (kvp.Value.Count != 1)
+                {
+                    throw new Exception("Attribute value should be represented as a single kv pair where the key is a type");
+                }
+
+                // concat the real key-value pair
+                ret += kvp.Key;
+                foreach (KeyValuePair<string, string> pair in kvp.Value)
+                {
+                    ret += pair.Value;
+                }
+            }
+
+            return ret;
         }
 
         public ulong GetSourceIdFromSerialized(byte[] serialized)
