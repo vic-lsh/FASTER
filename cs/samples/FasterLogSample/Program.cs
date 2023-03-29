@@ -546,6 +546,14 @@ namespace FasterLogSample
         static long samplesWritten = 0;
         static ulong lastIngestAddress = 0;
 
+        static long completed = 0;
+        static long queryStarted = 0;
+
+        static readonly int TRACING_START_INDEX = 2_575_366;
+        static readonly int QUERY_START_INDEX = 32_912_623;
+
+        static readonly int NUM_QUERIERS = 1;
+
         static FasterLog log;
 
         /// <summary>
@@ -559,8 +567,8 @@ namespace FasterLogSample
             Console.WriteLine("nanos per tick {0}", nanosecPerTick);
 
 
-            var pointsSerialized = DataLoader.LoadSerializedSamplesWithTimestamp("serialized_samples_saved");
-            // var pointsSerialized = SaveSerializedSamplesToFile("/home/fsolleza/data/telemetry-samples");
+            var pointsSerialized = DataLoader.LoadSerializedSamplesWithTimestamp("serialized_samples");
+            // var pointsSerialized = DataLoader.SaveSerializedSamplesToFile("/home/fsolleza/data/telemetry-samples");
 
             var perfSources = GetPerfSourceIds(pointsSerialized);
             Console.WriteLine($"Perf source ids: {perfSources.Count}");
@@ -569,6 +577,7 @@ namespace FasterLogSample
             using var config = new FasterLogSettings("./FasterLogSample", deleteDirOnDispose: false);
             config.MemorySize = 1L << 30;
             config.PageSize = 1L << 24;
+            config.AutoCommit = true;
 
             // FasterLog will recover and resume if there is a previous commit found
             log = new FasterLog(config);
@@ -578,10 +587,25 @@ namespace FasterLogSample
             var monitor = new Thread(() => MonitorThread());
             var writer = new Thread(() => WriteReplay(pointsSerialized));
 
+            var queriers = new List<Thread>();
+            for (int i = 0; i < NUM_QUERIERS; i++)
+            {
+                queriers.Add(new Thread(() => QueryThread(perfSources)));
+            }
+
             monitor.Start();
             writer.Start();
+            for (int i = 0; i < NUM_QUERIERS; i++)
+            {
+                queriers[i].Start();
+            }
+
             monitor.Join();
             writer.Join();
+            for (int i = 0; i < NUM_QUERIERS; i++)
+            {
+                queriers[i].Join();
+            }
         }
 
 
@@ -605,7 +629,7 @@ namespace FasterLogSample
 
             var compressBuf = new byte[8 /* prev block logical addr */ + LZ4Codec.MaximumOutputSize(sampleBatchSize)];
 
-            while (true)
+            while (Interlocked.Read(ref completed) == 0 || ch.Count > 0)
             {
                 try
                 {
@@ -669,6 +693,11 @@ namespace FasterLogSample
 
                 for (var i = start; i < end; i++)
                 {
+                    if (i == QUERY_START_INDEX)
+                    {
+                        Interlocked.Exchange(ref queryStarted, 1);
+                    }
+
                     Point.UpdateSerializedPointTimestamp(pointsSerialized[i].Item2, (ulong)Stopwatch.GetTimestamp());
 
                     if (ch.TryWrite(pointsSerialized[i].Item2))
@@ -715,6 +744,7 @@ namespace FasterLogSample
 
             Console.WriteLine("DONE, dropped {0}", dropped);
             ch.Complete();
+            Interlocked.Exchange(ref completed, 1);
         }
 
         static void MonitorThread()
@@ -727,7 +757,7 @@ namespace FasterLogSample
             sw.Start();
             var lastMs = sw.ElapsedMilliseconds;
 
-            while (true)
+            while (Interlocked.Read(ref completed) == 0)
             {
                 Thread.Sleep(1000);
                 var written = Interlocked.Read(ref samplesWritten);
@@ -735,14 +765,12 @@ namespace FasterLogSample
                 var dropped = Interlocked.Read(ref samplesDropped);
                 var now = sw.ElapsedMilliseconds;
 
-                var lastAddr = Interlocked.Read(ref lastIngestAddress);
-
                 var genRate = (generated - lastGenerated) / ((now - lastMs) / 1000);
                 var writtenRate = (written - lastWritten) / ((now - lastMs) / 1000);
                 var dropRate = (dropped - lastDropped) / ((now - lastMs) / 1000);
 
-                Console.WriteLine("gen rate: {0}, write rate: {1}, drop rate: {2}, lastaddr: {3}",
-                        genRate, writtenRate, dropRate, lastAddr);
+                Console.WriteLine("gen rate: {0}, write rate: {1}, drop rate: {2}",
+                        genRate, writtenRate, dropRate);
 
                 lastMs = now;
                 lastWritten = written;
@@ -911,9 +939,189 @@ namespace FasterLogSample
             }
         }
 
-        private static bool Different(ReadOnlySpan<byte> b1, ReadOnlySpan<byte> b2)
+        static void QueryThread(HashSet<ulong> sources)
         {
-            return !b1.SequenceEqual(b2);
+            Random random = new Random();
+            ulong queryDurNs = 10_000_000_000;
+
+            while (Interlocked.Read(ref queryStarted) == 0)
+            {
+                Thread.Sleep(1);
+            }
+
+            Console.WriteLine("QUERY BEGINS");
+
+            while (Interlocked.Read(ref completed) == 0)
+            {
+                var source = sources.ElementAt(random.Next(sources.Count));
+                var maxTs = (ulong)Stopwatch.GetTimestamp();
+                var minTs = maxTs - queryDurNs;
+
+                try
+                {
+                    Stopwatch sw = new Stopwatch();
+                    sw.Start();
+
+                    var samplesFound = ProcessQuery(new Query(source, minTs, maxTs), out int blocksScanned);
+
+                    Console.WriteLine($"Query for ID {source} took {sw.ElapsedMilliseconds} ms, found {samplesFound} samples, scanned {blocksScanned} blocks");
+                }
+                catch (Exception e)
+                {
+                    Console.WriteLine($"Query exception {e}");
+                }
+            }
+        }
+
+        static int ProcessQuery(Query q, out int blocksScanned)
+        {
+            blocksScanned = 0;
+            var sourceSampleCount = 0;
+
+            // wait until data within the queried timerange is available
+            var reverseScanStartAddr = PollUntilMinTimestamp(q.MaxTimestamp);
+            // Console.WriteLine("Poll completed");
+
+            var decompressed = new byte[sampleBatchSize];
+            var currAddr = reverseScanStartAddr;
+            while (true)
+            {
+                var (block, _) = log.ReadAsync((long)currAddr).GetAwaiter().GetResult();
+                if (block == null)
+                {
+                    throw new Exception($"read null block at {currAddr}, committed until {log.CommittedUntilAddress}");
+                }
+                blocksScanned++;
+
+                var decodedSize = LZ4Codec.Decode(new Span<byte>(block, 8, block.Length - 8), decompressed.AsSpan());
+                if (decodedSize < 0)
+                {
+                    throw new Exception("Failed to decode compressed block");
+                }
+
+                var done = ProcessBlockSamples(new Span<byte>(decompressed, 0, decodedSize), q, out int count);
+                sourceSampleCount += count;
+
+                if (done)
+                {
+                    break;
+                }
+
+                var next = BinaryPrimitives.ReadUInt64BigEndian(new Span<byte>(block, 0, 8));
+                // Console.WriteLine($"blocks scanned {blocksScanned}, curr {currAddr}, next {next}");
+                if (next == currAddr || next == 0)
+                {
+                    break;
+                }
+                if (next > currAddr)
+                {
+                    throw new Exception($"next block to scan has a higher address {next} than curr address {currAddr}");
+                }
+                currAddr = next;
+            }
+
+            return sourceSampleCount;
+        }
+
+        // Queries the block by scanning, returning whether the query is done.
+        static bool ProcessBlockSamples(Span<byte> sampleBytes, Query q, out int sourceSampleCount)
+        {
+            sourceSampleCount = 0;
+            var done = false;
+            uint sampleOffset = 0;
+            while (true)
+            {
+                if (sampleOffset >= sampleBytes.Length)
+                {
+                    return done;
+                }
+
+                var currSample = sampleBytes.Slice((int)sampleOffset);
+                var ts = Point.GetTimestampFromSerialized(currSample);
+                if (ts < q.MinTimestamp)
+                {
+                    //  this is the last block that needs to be queried
+                    done = true;
+                }
+                if (Point.GetSourceIdFromSerialized(currSample) == q.SourceId)
+                {
+                    sourceSampleCount++;
+                }
+                sampleOffset += Point.GetSampleSize(currSample);
+            }
+
+        }
+
+        static ulong PollUntilMinTimestamp(ulong timestamp)
+        {
+            var decompressed = new byte[sampleBatchSize];
+
+            ulong lastAddr = 0;
+            ulong currAddr = 0;
+
+            while (true)
+            {
+                // read distinct block addr
+                while (true)
+                {
+                    currAddr = Interlocked.Read(ref lastIngestAddress);
+                    if (currAddr != lastAddr)
+                    {
+                        lastAddr = currAddr;
+                        break;
+                    }
+                    Thread.Sleep(10);
+                }
+
+                // Console.WriteLine($"poll scanning {currAddr}");
+
+                // read and decompress block
+                byte[] block;
+                while (true)
+                {
+                    (block, _) = log.ReadAsync((long)currAddr).GetAwaiter().GetResult();
+                    if (block != null)
+                    {
+                        Console.WriteLine("got nonnull, breaking");
+                        break;
+                    }
+                    Thread.Sleep(10);
+                    Console.WriteLine($"Addr {currAddr} is null, latest {log.TailAddress}, commited until {log.CommittedUntilAddress}, begin {log.BeginAddress}");
+                }
+
+                var decodedSize = LZ4Codec.Decode(new Span<byte>(block, 8, block.Length - 8), decompressed.AsSpan());
+                if (decodedSize < 0)
+                {
+                    throw new Exception("Failed to decode compressed block");
+                }
+
+                // scan until we find a sample that is later than our target timestamp
+                uint sampleOffset = 0;
+                while (true)
+                {
+                    // Console.WriteLine($"offset {sampleOffset}, len {block.Length}");
+                    if (sampleOffset >= block.Length)
+                    {
+                        // finished scanning the block
+                        break;
+                    }
+
+                    var currSample = new Span<byte>(block, (int)sampleOffset, block.Length - (int)sampleOffset);
+                    var ts = Point.GetTimestampFromSerialized(currSample);
+                    if (ts > timestamp)
+                    {
+                        // samples have monotonically increasing timestamp
+                        return currAddr;
+                    }
+
+                    var sampleSize = Point.GetSampleSize(currSample);
+                    if (sampleSize == 0)
+                    {
+                        throw new Exception("Sample size cannot be zero");
+                    }
+                    sampleOffset += sampleSize;
+                }
+            }
         }
     }
 }
