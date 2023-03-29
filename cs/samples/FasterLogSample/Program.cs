@@ -92,6 +92,12 @@ namespace FasterLogSample
             return bytes;
         }
 
+        public static byte[] ShortToBigEndianBytes(short n)
+        {
+            var bytes = new byte[2];
+            BinaryPrimitives.WriteInt16BigEndian(bytes.AsSpan<byte>(), n);
+            return bytes;
+        }
     }
 
     public class Point
@@ -104,15 +110,46 @@ namespace FasterLogSample
 
         public Value[] values { get; set; }
 
+        public static readonly int TYPE_OFFSET = 6;
+
+        public static readonly int SOURCE_ID_OFFSET = 8;
+
+        public static readonly int TIMESTAMP_OFFSET = 16;
+
         public static byte[] Serialize(Point point)
         {
+            // Serialization format
+            //
+            //  0   1   2   3   4   5   6   7
+            // |---|---|---|---|---|---|---|---|
+            // | sample size   |hdr sz |typ|   |
+            // |         source id             |
+            // |         timestamp             |
+            // | var1 type&idx | var2 type&idx |
+            // |     ...       |     ...       |
+            // |     ...       |     ...       |
+            // |    Sample variable data ...   |
+            //
+            // where type&idx uses the first byte to indicate the variable's
+            // type, and the remaining 3 bytes to store the variable offset.
+            //
+            // To access a variable's data, offset into `hdr sz + var offset`.
+            //
+            // If the variable is a string, the first 4 bytes of the variable
+            // is the length of the variable.
+
             List<byte> bytes = new List<byte>();
 
             var otelType = point.otel_type.ToOtelType();
             var sourceId = Point.calculateSourceId(point.attributes);
 
-            bytes.Add(point.calcHeaderSizeAsByte());
+            // sample size (to be written at the end)
+            bytes.AddRange(Enumerable.Repeat((byte)0, 4));
+
+            var headerSize = point.calcHeaderSize();
+            bytes.AddRange(Serializer.ShortToBigEndianBytes(headerSize));
             bytes.Add((byte)otelType);
+            bytes.Add((byte)0); // padding
 
             bytes.AddRange(Serializer.UlongToBigEndianBytes(sourceId));
             bytes.AddRange(Serializer.UlongToBigEndianBytes(point.timestamp));
@@ -121,19 +158,27 @@ namespace FasterLogSample
             foreach (var value in point.values)
             {
                 var (type, valueBytes) = Point.serializeValueEntry(value);
-                bytes.Add((byte)type);
                 serialized.Add((type, valueBytes));
-                bytes.AddRange(Enumerable.Repeat((byte)0, 4)); // offset
+                bytes.AddRange(Enumerable.Repeat((byte)0, 4)); // reserved space for (type & idx)
             }
 
             for (int i = 0; i < serialized.Count; i++)
             {
-                var loc = bytes.Count;
-                var locBytes = Serializer.UintToBigEndianBytes((uint)loc);
-                var start = Point.getEntryOffsetLoc(i);
-                for (int j = 0; j < locBytes.Length; j++)
+                var varOffset = bytes.Count;
+                if (varOffset >= 16_777_216)
                 {
-                    bytes[start + j] = locBytes[j];
+                    throw new Exception("Sample is too large. Sample maximum size is 2^24.");
+                }
+
+                var varOffsetBytes = Serializer.UintToBigEndianBytes((uint)varOffset);
+
+                // steal the offset's first byte to store variable type
+                varOffsetBytes[0] = (byte)serialized[i].Item1;
+
+                var start = Point.getEntryOffsetLoc(i);
+                for (var j = 0; j < 4; j++)
+                {
+                    bytes[start + j] = varOffsetBytes[j];
                 }
 
                 var (type, valueBytes) = serialized[i];
@@ -145,8 +190,14 @@ namespace FasterLogSample
 
             }
 
-            var arr = bytes.ToArray();
-            return arr;
+            // write sample size
+            var sampleSizeBytes = Serializer.UintToBigEndianBytes((uint)bytes.Count);
+            for (int i = 0; i < 4; i++)
+            {
+                bytes[i] = sampleSizeBytes[i];
+            }
+
+            return bytes.ToArray();
         }
 
         // TODO
@@ -188,78 +239,76 @@ namespace FasterLogSample
 
         public static bool IsType(byte[] serialized, OtelType type)
         {
-            return serialized[1] == (byte)type;
+            return serialized[TYPE_OFFSET] == (byte)type;
         }
 
-        public static ulong GetSourceIdFromSerialized(byte[] serialized)
+        public static ulong GetSourceIdFromSerialized(Span<byte> serialized)
         {
-            var sourceIdOffset = getSourceIdOffset();
-            if (serialized.Length < sourceIdOffset + 8)
+            if (serialized.Length < SOURCE_ID_OFFSET + 8)
             {
                 throw new Exception("Corrupted serialized sample: sample does not contain a source ID");
             }
 
-            var id = BinaryPrimitives.ReadUInt64BigEndian(new Span<byte>(serialized, sourceIdOffset, 8));
+            var id = BinaryPrimitives.ReadUInt64BigEndian(serialized.Slice(SOURCE_ID_OFFSET, 8));
             return id;
         }
 
-        private static int getSourceIdOffset()
+        public static ulong GetTimestampFromSerialized(Span<byte> serialized)
         {
-            return 1 /* header size */
-                + 1 /* otel type */;
-            // source id is next
-        }
-
-        public static ulong GetTimestampFromSerialized(byte[] serialized)
-        {
-            var tsOffset = getTimestampOffset();
-            if (serialized.Length < tsOffset + 8)
+            if (serialized.Length < TIMESTAMP_OFFSET + 8)
             {
                 throw new Exception("Corrupted serialized sample: sample does not contain a timestamp");
             }
 
-            var ts = BinaryPrimitives.ReadUInt64BigEndian(new Span<byte>(serialized, tsOffset, 8));
+            var ts = BinaryPrimitives.ReadUInt64BigEndian(serialized.Slice(TIMESTAMP_OFFSET, 8));
             return ts;
         }
 
         public static void UpdateSerializedPointTimestamp(byte[] serialized, ulong newTimestamp)
         {
-            BinaryPrimitives.WriteUInt64BigEndian(new Span<byte>(serialized, 10, 8), newTimestamp);
+            BinaryPrimitives.WriteUInt64BigEndian(new Span<byte>(serialized, TIMESTAMP_OFFSET, 8), newTimestamp);
         }
 
-        private static int getTimestampOffset()
+        public static uint GetSampleSize(Span<byte> serialized)
         {
-            return 1 /* header size */
-                + 1 /* otel type */
-                + 8 /* source id */;
-            // timestamp is next
+            if (serialized.Length < 4)
+            {
+                throw new Exception("Corrupted serialized sample: sample does not contain its size");
+            }
+
+            var sampleSize = BinaryPrimitives.ReadUInt32BigEndian(serialized.Slice(0, 4));
+            return sampleSize;
         }
 
-        private byte calcHeaderSizeAsByte()
+        private short calcHeaderSize()
         {
             var sz = 0;
-            sz += 1; // header size
-            sz += 1; // otel type
+
+            sz += 4; // sample size
+            sz += 2; // header size
+            sz += 1; // sample type
+            sz += 1; // padding
             sz += 8; // source id
             sz += 8; // timestamp
-            sz += 5 * values.Length; // value (type, offset)s
+            sz += 4 * values.Length; // size for (type & idx) per variable
 
-            if (sz > 255)
+            if (sz > 65535)
             {
                 throw new Exception("Point too large");
             }
 
-            return (byte)sz;
+            return (short)sz;
         }
 
         private static int getEntryOffsetLoc(int index)
         {
-            return 1 /* header size */
+            return 4 /* sample size */
+                + 2 /* header size */
                 + 1 /* otel type */
+                + 1 /* padding */
                 + 8 /* source id */
                 + 8 /* timestamp */
-                + index * 5 /* prev entries */
-                + 1 /* this entry's type */;
+                + index * 4 /* prev (type & idx) entries */;
         }
 
         private static ValueType getValueType(Value val)
