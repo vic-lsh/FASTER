@@ -2,6 +2,7 @@
 // Licensed under the MIT license.
 
 using System;
+using System.Buffers;
 using System.IO;
 using System.Threading.Channels;
 using System.Buffers.Binary;
@@ -964,12 +965,12 @@ namespace FasterLogSample
             Random random = new Random();
             ulong queryDurNs = 10_000_000_000;
 
-            while (Interlocked.Read(ref queryStarted) == 0)
-            {
-                Thread.Sleep(1);
-            }
+            Thread.Sleep(245 * 1_000);
+            // Thread.Sleep(15 * 1_000);
 
             Console.WriteLine("QUERY BEGINS");
+
+            var decompressBuf = new byte[sampleBatchSize];
 
             while (Interlocked.Read(ref completed) == 0)
             {
@@ -982,7 +983,7 @@ namespace FasterLogSample
                     Stopwatch sw = new Stopwatch();
                     sw.Start();
 
-                    var samplesFound = ProcessQuery(new Query(source, minTs, maxTs), out int blocksScanned);
+                    var samplesFound = ProcessQuery(new Query(source, minTs, maxTs), decompressBuf, out int blocksScanned);
 
                     Console.WriteLine($"Query for ID {source} took {sw.ElapsedMilliseconds} ms, found {samplesFound} samples, scanned {blocksScanned} blocks");
                 }
@@ -993,33 +994,37 @@ namespace FasterLogSample
             }
         }
 
-        static int ProcessQuery(Query q, out int blocksScanned)
+        static int ProcessQuery(Query q, byte[] decmpBuffer, out int blocksScanned)
         {
             blocksScanned = 0;
             var sourceSampleCount = 0;
 
             // wait until data within the queried timerange is available
-            var reverseScanStartAddr = PollUntilMinTimestamp(q.MaxTimestamp);
+            var reverseScanStartAddr = PollUntilMinTimestamp(q.MaxTimestamp, decmpBuffer);
+
             // Console.WriteLine("Poll completed");
 
-            var decompressed = new byte[sampleBatchSize];
             var currAddr = reverseScanStartAddr;
             while (true)
             {
-                var (block, _) = log.ReadAsync((long)currAddr).GetAwaiter().GetResult();
+                // byte[] block = ReadBlockAt(currAddr);
+
+                var (block, length) = log.ReadAsync((long)currAddr, MemoryPool<byte>.Shared).GetAwaiter().GetResult();
                 if (block == null)
                 {
                     throw new Exception($"read null block at {currAddr}, committed until {log.CommittedUntilAddress}");
                 }
                 blocksScanned++;
+                var blockSpan = block.Memory.Span.Slice(0, length);
 
-                var decodedSize = LZ4Codec.Decode(new Span<byte>(block, 8, block.Length - 8), decompressed.AsSpan());
+                // var decodedSize = LZ4Codec.Decode(new Span<byte>(block, 8, block.Length - 8), decmpBuffer.AsSpan());
+                var decodedSize = LZ4Codec.Decode(blockSpan.Slice(8), decmpBuffer.AsSpan());
                 if (decodedSize < 0)
                 {
-                    throw new Exception("Failed to decode compressed block");
+                    throw new Exception($"Failed to decode compressed block, block size {blockSpan.Length}, decomp buffer length {decmpBuffer.Length}");
                 }
 
-                var done = ProcessBlockSamples(new Span<byte>(decompressed, 0, decodedSize), q, out int count);
+                var done = ProcessBlockSamples(new Span<byte>(decmpBuffer, 0, decodedSize), q, out int count);
                 sourceSampleCount += count;
 
                 if (done)
@@ -1027,8 +1032,10 @@ namespace FasterLogSample
                     break;
                 }
 
-                var next = BinaryPrimitives.ReadUInt64BigEndian(new Span<byte>(block, 0, 8));
+                // var next = BinaryPrimitives.ReadUInt64BigEndian(new Span<byte>(block, 0, 8));
+                var next = BinaryPrimitives.ReadUInt64BigEndian(blockSpan.Slice(0, 8));
                 // Console.WriteLine($"blocks scanned {blocksScanned}, curr {currAddr}, next {next}");
+
                 if (next == currAddr || next == 0)
                 {
                     break;
@@ -1072,10 +1079,8 @@ namespace FasterLogSample
 
         }
 
-        static ulong PollUntilMinTimestamp(ulong timestamp)
+        static ulong PollUntilMinTimestamp(ulong timestamp, byte[] decompressed)
         {
-            var decompressed = new byte[sampleBatchSize];
-
             ulong lastAddr = 0;
             ulong currAddr = 0;
 
@@ -1096,23 +1101,29 @@ namespace FasterLogSample
                 // Console.WriteLine($"poll scanning {currAddr}");
 
                 // read and decompress block
-                byte[] block;
+                // byte[] block = ReadBlockAt(currAddr);
+                // byte[] block;
+
+                Span<byte> blockSpan;
                 while (true)
                 {
-                    (block, _) = log.ReadAsync((long)currAddr).GetAwaiter().GetResult();
-                    if (block != null)
+                    var (block, length) = log.ReadAsync((long)currAddr, MemoryPool<byte>.Shared).GetAwaiter().GetResult();
+                    // Console.WriteLine($"{block}, {length}");
+                    if (block != null && length != 0)
                     {
-                        Console.WriteLine("got nonnull, breaking");
+                        // Console.WriteLine("got nonnull, breaking");
+                        blockSpan = block.Memory.Span.Slice(0, length);
                         break;
                     }
                     Thread.Sleep(10);
-                    Console.WriteLine($"Addr {currAddr} is null, latest {log.TailAddress}, commited until {log.CommittedUntilAddress}, begin {log.BeginAddress}");
+                    // Console.WriteLine($"Addr {currAddr} is null, latest {log.TailAddress}, commited until {log.CommittedUntilAddress}, begin {log.BeginAddress}");
                 }
 
-                var decodedSize = LZ4Codec.Decode(new Span<byte>(block, 8, block.Length - 8), decompressed.AsSpan());
+                // var decodedSize = LZ4Codec.Decode(new Span<byte>(block, 8, block.Length - 8), decompressed.AsSpan());
+                var decodedSize = LZ4Codec.Decode(blockSpan.Slice(8), decompressed.AsSpan());
                 if (decodedSize < 0)
                 {
-                    throw new Exception("Failed to decode compressed block");
+                    throw new Exception($"Failed to decode compressed block, block span size {blockSpan.Length}");
                 }
 
                 // scan until we find a sample that is later than our target timestamp
@@ -1120,13 +1131,14 @@ namespace FasterLogSample
                 while (true)
                 {
                     // Console.WriteLine($"offset {sampleOffset}, len {block.Length}");
-                    if (sampleOffset >= block.Length)
+                    if (sampleOffset >= blockSpan.Length)
                     {
                         // finished scanning the block
                         break;
                     }
 
-                    var currSample = new Span<byte>(block, (int)sampleOffset, block.Length - (int)sampleOffset);
+                    // var currSample = new Span<byte>(block, (int)sampleOffset, block.Length - (int)sampleOffset);
+                    var currSample = blockSpan.Slice((int)sampleOffset);
                     var ts = Point.GetTimestampFromSerialized(currSample);
                     if (ts > timestamp)
                     {
@@ -1141,6 +1153,30 @@ namespace FasterLogSample
                     }
                     sampleOffset += sampleSize;
                 }
+            }
+        }
+
+        private static byte[] ReadBlockAt(ulong address)
+        {
+            var ctr = 0;
+            using (var iter = log.Scan((long)address, long.MaxValue, scanUncommitted: true))
+            {
+                byte[] buffer;
+                int bufLen;
+                while (!iter.GetNext(out buffer, out bufLen, out _, out _))
+                {
+                    Thread.Sleep(10);
+                    // iter.WaitAsync().GetAwaiter().GetResult();
+                    Console.WriteLine($"waiting {ctr}");
+                    ctr++;
+                }
+
+                if (buffer.Length != bufLen)
+                {
+                    Console.WriteLine($"warn: buffer len is {buffer.Length} but buflen is {bufLen}");
+                }
+
+                return buffer;
             }
         }
     }
