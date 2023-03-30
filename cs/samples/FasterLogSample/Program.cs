@@ -542,17 +542,18 @@ namespace FasterLogSample
         const double CyclesPerNanosecond = 2.7;
 
         static long samplesGenerated = 0;
-        static long samplesDropped = 0;
+        static long chanFullDropped = 0;
+        static long timeLagDropped = 0;
+
         static long samplesWritten = 0;
         static ulong lastIngestAddress = 0;
 
         static long completed = 0;
-        static long queryStarted = 0;
 
-        static readonly int TRACING_START_INDEX = 2_575_366;
-        static readonly int QUERY_START_INDEX = 32_912_623;
+        // static readonly int TRACING_START_INDEX = 2_575_366;
+        // static readonly int QUERY_START_INDEX = 32_912_623;
 
-        static readonly int NUM_QUERIERS = 1;
+        static readonly int NUM_QUERIERS = 5;
 
         static FasterLog log;
 
@@ -658,19 +659,30 @@ namespace FasterLogSample
                             sampleBatchOffset = 0;
                         }
                     }
+                    else
+                    {
+                        if (ch.Count == 0 && Interlocked.Read(ref completed) == 1)
+                            break;
+                    }
                 }
                 catch (Exception e)
                 {
                     Console.WriteLine("writer exception: {0}", e);
                 }
             }
+
+            // foreach (var t in enqueueTime)
+            // {
+            //     Console.WriteLine($"{t.Item1} {t.Item2}");
+            // }
         }
 
         static void BatchThread(ChannelWriter<byte[]> ch, List<(ulong, byte[])> pointsSerialized)
         {
             var batchSize = 10;
             var generated = 0;
-            var dropped = 0;
+            var chDropped = 0;
+            var lagDropped = 0;
 
             // var idx = 2_575_366;
             var idx = 0;
@@ -693,11 +705,6 @@ namespace FasterLogSample
 
                 for (var i = start; i < end; i++)
                 {
-                    if (i == QUERY_START_INDEX)
-                    {
-                        Interlocked.Exchange(ref queryStarted, 1);
-                    }
-
                     Point.UpdateSerializedPointTimestamp(pointsSerialized[i].Item2, (ulong)Stopwatch.GetTimestamp());
 
                     if (ch.TryWrite(pointsSerialized[i].Item2))
@@ -706,7 +713,7 @@ namespace FasterLogSample
                     }
                     else
                     {
-                        dropped++;
+                        chDropped++;
                     }
                 }
                 idx = end;
@@ -731,9 +738,10 @@ namespace FasterLogSample
                     while (pointsSerialized[idx].Item1 < elapsedNs && idx < pointsSerialized.Count())
                     {
                         idx++;
-                        dropped++;
+                        lagDropped++;
                     }
-                    Interlocked.Exchange(ref samplesDropped, dropped);
+                    Interlocked.Exchange(ref timeLagDropped, lagDropped);
+                    Interlocked.Exchange(ref chanFullDropped, chDropped);
 
                     if (idx == pointsSerialized.Count())
                     {
@@ -742,7 +750,7 @@ namespace FasterLogSample
                 }
             }
 
-            Console.WriteLine("DONE, dropped {0}", dropped);
+            Console.WriteLine("DONE, dropped {0}", lagDropped + chDropped);
             ch.Complete();
             Interlocked.Exchange(ref completed, 1);
         }
@@ -751,7 +759,8 @@ namespace FasterLogSample
         {
             long lastWritten = 0;
             long lastGenerated = 0;
-            long lastDropped = 0;
+            long lastChanDropped = 0;
+            long lastLagDropped = 0;
 
             Stopwatch sw = new Stopwatch();
             sw.Start();
@@ -762,20 +771,23 @@ namespace FasterLogSample
                 Thread.Sleep(1000);
                 var written = Interlocked.Read(ref samplesWritten);
                 var generated = Interlocked.Read(ref samplesGenerated);
-                var dropped = Interlocked.Read(ref samplesDropped);
+                var chDrop = Interlocked.Read(ref chanFullDropped);
+                var lagDrop = Interlocked.Read(ref timeLagDropped);
                 var now = sw.ElapsedMilliseconds;
 
                 var genRate = (generated - lastGenerated) / ((now - lastMs) / 1000);
                 var writtenRate = (written - lastWritten) / ((now - lastMs) / 1000);
-                var dropRate = (dropped - lastDropped) / ((now - lastMs) / 1000);
+                var chanDropRate = (chDrop - lastChanDropped) / ((now - lastMs) / 1000);
+                var lagDropRate = (lagDrop - lastLagDropped) / ((now - lastMs) / 1000);
 
-                Console.WriteLine("gen rate: {0}, write rate: {1}, drop rate: {2}",
-                        genRate, writtenRate, dropRate);
+                Console.WriteLine("gen rate: {0}, write rate: {1}, chan drop rate: {2}, lag drop rate: {3}",
+                        genRate, writtenRate, chanDropRate, lagDropRate);
 
                 lastMs = now;
                 lastWritten = written;
                 lastGenerated = generated;
-                lastDropped = dropped;
+                lastChanDropped = chDrop;
+                lastLagDropped = lagDrop;
             }
         }
 
