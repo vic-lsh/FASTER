@@ -628,9 +628,13 @@ namespace FasterLogSample
             var samplesBatched = 0;
             ulong prevLogicalAddress = 0;
 
+            // var enqueueTime = new List<(long, long)>();
+
             var compressBuf = new byte[8 /* prev block logical addr */ + LZ4Codec.MaximumOutputSize(sampleBatchSize)];
 
-            while (Interlocked.Read(ref completed) == 0 || ch.Count > 0)
+            var writeStart = Stopwatch.GetTimestamp();
+
+            while (true)
             {
                 try
                 {
@@ -651,7 +655,11 @@ namespace FasterLogSample
                             var prevAddrBytes = Serializer.UlongToBigEndianBytes(prevLogicalAddress);
                             Buffer.BlockCopy(prevAddrBytes, 0, compressBuf, 0, prevAddrBytes.Length);
 
+                            // var enqStart = Stopwatch.GetTimestamp();
                             prevLogicalAddress = (ulong)log.Enqueue(new ReadOnlySpan<byte>(compressBuf, 0, 8 + encodedLength));
+                            // var end = Stopwatch.GetTimestamp();
+                            // enqueueTime.Add((end - writeStart, end - enqStart));
+
                             Interlocked.Exchange(ref lastIngestAddress, prevLogicalAddress);
 
                             Interlocked.Add(ref samplesWritten, samplesBatched);
