@@ -554,7 +554,7 @@ namespace FasterLogSample
         // static readonly int TRACING_START_INDEX = 2_575_366;
         // static readonly int QUERY_START_INDEX = 32_912_623;
 
-        static readonly int NUM_QUERIERS = 5;
+        static readonly int NUM_QUERIERS = 2;
 
         static FasterLog log;
 
@@ -583,8 +583,6 @@ namespace FasterLogSample
 
             // FasterLog will recover and resume if there is a previous commit found
             log = new FasterLog(config);
-
-            // WriteCompressed(pointsSerialized);
 
             var monitor = new Thread(() => MonitorThread());
             var writer = new Thread(() => WriteReplay(pointsSerialized));
@@ -936,30 +934,6 @@ namespace FasterLogSample
             return sourceIds;
         }
 
-        static void CommitThread()
-        {
-            //Task<LinkedCommitInfo> prevCommitTask = null;
-            while (true)
-            {
-                Thread.Sleep(5);
-                log.Commit(true);
-
-                // Async version
-                // await log.CommitAsync();
-
-                // Async version that catches all commit failures in between
-                //try
-                //{
-                //    prevCommitTask = await log.CommitAsync(prevCommitTask);
-                //}
-                //catch (CommitFailureException e)
-                //{
-                //    Console.WriteLine(e);
-                //    prevCommitTask = e.LinkedCommitInfo.nextTcs.Task;
-                //}
-            }
-        }
-
         static void QueryThread(HashSet<ulong> sources)
         {
             Random random = new Random();
@@ -1007,8 +981,6 @@ namespace FasterLogSample
             var currAddr = reverseScanStartAddr;
             while (true)
             {
-                // byte[] block = ReadBlockAt(currAddr);
-
                 var (block, length) = log.ReadAsync((long)currAddr, MemoryPool<byte>.Shared).GetAwaiter().GetResult();
                 if (block == null)
                 {
@@ -1017,7 +989,6 @@ namespace FasterLogSample
                 blocksScanned++;
                 var blockSpan = block.Memory.Span.Slice(0, length);
 
-                // var decodedSize = LZ4Codec.Decode(new Span<byte>(block, 8, block.Length - 8), decmpBuffer.AsSpan());
                 var decodedSize = LZ4Codec.Decode(blockSpan.Slice(8), decmpBuffer.AsSpan());
                 if (decodedSize < 0)
                 {
@@ -1032,7 +1003,6 @@ namespace FasterLogSample
                     break;
                 }
 
-                // var next = BinaryPrimitives.ReadUInt64BigEndian(new Span<byte>(block, 0, 8));
                 var next = BinaryPrimitives.ReadUInt64BigEndian(blockSpan.Slice(0, 8));
                 // Console.WriteLine($"blocks scanned {blocksScanned}, curr {currAddr}, next {next}");
 
@@ -1100,15 +1070,10 @@ namespace FasterLogSample
 
                 // Console.WriteLine($"poll scanning {currAddr}");
 
-                // read and decompress block
-                // byte[] block = ReadBlockAt(currAddr);
-                // byte[] block;
-
                 Span<byte> blockSpan;
                 while (true)
                 {
                     var (block, length) = log.ReadAsync((long)currAddr, MemoryPool<byte>.Shared).GetAwaiter().GetResult();
-                    // Console.WriteLine($"{block}, {length}");
                     if (block != null && length != 0)
                     {
                         // Console.WriteLine("got nonnull, breaking");
@@ -1119,7 +1084,6 @@ namespace FasterLogSample
                     // Console.WriteLine($"Addr {currAddr} is null, latest {log.TailAddress}, commited until {log.CommittedUntilAddress}, begin {log.BeginAddress}");
                 }
 
-                // var decodedSize = LZ4Codec.Decode(new Span<byte>(block, 8, block.Length - 8), decompressed.AsSpan());
                 var decodedSize = LZ4Codec.Decode(blockSpan.Slice(8), decompressed.AsSpan());
                 if (decodedSize < 0)
                 {
@@ -1137,7 +1101,6 @@ namespace FasterLogSample
                         break;
                     }
 
-                    // var currSample = new Span<byte>(block, (int)sampleOffset, block.Length - (int)sampleOffset);
                     var currSample = blockSpan.Slice((int)sampleOffset);
                     var ts = Point.GetTimestampFromSerialized(currSample);
                     if (ts > timestamp)
