@@ -34,7 +34,7 @@ namespace FasterLogSample
         // static readonly int TRACING_START_INDEX = 2_575_366;
         // static readonly int QUERY_START_INDEX = 32_912_623;
 
-        static readonly int NUM_QUERIERS = 2;
+        static readonly int NUM_QUERIERS = 10;
 
         static FasterLog log;
 
@@ -49,7 +49,7 @@ namespace FasterLogSample
             Console.WriteLine("nanos per tick {0}", nanosecPerTick);
 
 
-            var pointsSerialized = DataLoader.LoadSerializedSamplesWithTimestamp("serialized_samples");
+            var pointsSerialized = DataLoader.LoadSerializedSamplesWithTimestamp("data/serialized_samples");
             // var pointsSerialized = DataLoader.SaveSerializedSamplesToFile("/home/fsolleza/data/telemetry-samples");
 
             var perfSources = GetPerfSourceIds(pointsSerialized);
@@ -495,6 +495,7 @@ namespace FasterLogSample
                     throw new Exception($"next block to scan has a higher address {next} than curr address {currAddr}");
                 }
                 currAddr = next;
+                block.Dispose();
             }
 
             return sourceSampleCount;
@@ -551,9 +552,11 @@ namespace FasterLogSample
                 // Console.WriteLine($"poll scanning {currAddr}");
 
                 Span<byte> blockSpan;
+                IMemoryOwner<byte> block;
+                int length;
                 while (true)
                 {
-                    var (block, length) = log.ReadAsync((long)currAddr, MemoryPool<byte>.Shared).GetAwaiter().GetResult();
+                    (block, length) = log.ReadAsync((long)currAddr, MemoryPool<byte>.Shared).GetAwaiter().GetResult();
                     if (block != null && length != 0)
                     {
                         // Console.WriteLine("got nonnull, breaking");
@@ -596,6 +599,8 @@ namespace FasterLogSample
                     }
                     sampleOffset += sampleSize;
                 }
+
+                block.Dispose();
             }
         }
 
