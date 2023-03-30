@@ -9,7 +9,7 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <RootNamespace>FasterLogSample</RootNamespace>
+    <RootNamespace>FasterLogQuerier</RootNamespace>
     <ErrorReport>prompt</ErrorReport>
     <RestoreProjectStyle>PackageReference</RestoreProjectStyle>
   </PropertyGroup>
@@ -40,10 +40,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\core\FASTER.core.csproj" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <ProjectReference Include="..\FasterLogQuerier\FasterLogQuerier.csproj" />
   </ItemGroup>
 
   <ItemGroup>

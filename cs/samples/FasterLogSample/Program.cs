@@ -11,31 +11,10 @@ using System.Collections.Generic;
 using K4os.Compression.LZ4;
 using FASTER.core;
 using System.Linq;
+using FasterLogQuerier;
 
 namespace FasterLogSample
 {
-
-
-    public class Query
-    {
-        public ulong SourceId { get; }
-
-        public ulong MinTimestamp { get; }
-
-        public ulong MaxTimestamp { get; }
-
-        public Query(ulong source, ulong minTs, ulong maxTs)
-        {
-            if (minTs >= maxTs)
-            {
-                throw new Exception($"Invalid query timerange: [{minTs}, {maxTs})");
-            }
-            SourceId = source;
-            MinTimestamp = minTs;
-            MaxTimestamp = maxTs;
-        }
-    }
-
     public class Program
     {
         const int sampleBatchSize = 1 << 20;
