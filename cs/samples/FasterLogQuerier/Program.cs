@@ -19,6 +19,8 @@ namespace FasterLogQuerier
 
         static void Main()
         {
+            // var c = new QueryClient(SERVER, PORT);
+
             var firstClient = new QueryClient(SERVER, PORT, usePerfSources: false);
             Thread.Sleep(150_000);
             Console.WriteLine("low rate client begins query");
@@ -64,7 +66,7 @@ namespace FasterLogQuerier
     class QueryClient : IDisposable
     {
         // static readonly ulong LOOKBACK_NS = 10_000_000_000;
-        static readonly ulong LOOKBACK_NS = 1_000_000_000;
+        static readonly ulong LOOKBACK_NS = 10_000_000_000;
 
         Random rand = new Random();
         HashSet<ulong> sources;
@@ -72,11 +74,52 @@ namespace FasterLogQuerier
         TcpClient client;
         NetworkStream stream;
 
+        public QueryClient(string server, int port)
+        {
+            try
+            {
+                client = ConnectWithRetry(server, port);
+                Console.WriteLine("Client connected");
+                stream = client.GetStream();
+
+                buf = new byte[1L << 21];
+
+                var input = new byte[4];
+                for (var i = 0; i < input.Length; i++)
+                {
+                    input[i] = 0;
+                }
+
+                var itr = 0;
+                while (true)
+                {
+                    var start = Stopwatch.GetTimestamp();
+                    // Write(stream, input);
+                    stream.Write(input, 0, 4);
+
+                    ReadMessage(stream, buf);
+                    // ReadNBytes(stream, buf, 165000);
+                    var end = Stopwatch.GetTimestamp();
+                    if (itr % 20 == 0)
+                    {
+                        Console.WriteLine("{0}", end - start);
+                    }
+                    itr++;
+                }
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine("QueryClientException: {0}", e);
+            }
+
+        }
+
         public QueryClient(string server, int port, bool usePerfSources)
         {
             try
             {
                 client = ConnectWithRetry(server, port);
+                client.NoDelay = true;
                 Console.WriteLine("Client connected");
                 stream = client.GetStream();
 
