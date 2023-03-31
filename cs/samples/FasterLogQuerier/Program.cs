@@ -17,48 +17,83 @@ namespace FasterLogQuerier
         static readonly int PORT = 13000;
         static readonly int NUM_QUERIERS = 10;
 
-
         static void Main()
         {
+            var firstClient = new QueryClient(SERVER, PORT, usePerfSources: false);
+            Thread.Sleep(150_000);
+            Console.WriteLine("low rate client begins query");
+            new Thread(() =>
+            {
+                var sw = new Stopwatch();
+                sw.Start();
+                while (sw.ElapsedMilliseconds < 115_000)
+                {
+                    firstClient.DoQuery();
+                }
+            }).Start();
+
+            Thread.Sleep(115_000);
+            Console.WriteLine("perf clients begin query");
+
+            var thrs = new List<Thread>();
             for (var i = 0; i < NUM_QUERIERS; i++)
             {
-                new Thread(() => new QueryClient(SERVER, PORT)).Start();
+                var t = new Thread(() =>
+                {
+                    var c = new QueryClient(SERVER, PORT, usePerfSources: true);
+                    var sw = new Stopwatch();
+                    sw.Start();
+                    // while (sw.ElapsedMilliseconds < 70_000)
+                    while (sw.ElapsedMilliseconds < 115_000)
+                    {
+                        c.DoQuery();
+                    }
+                });
+                thrs.Add(t);
+                t.Start();
+            }
+
+            foreach (var t in thrs)
+            {
+                t.Join();
             }
         }
 
     }
 
-    class QueryClient
+    class QueryClient : IDisposable
     {
         // static readonly ulong LOOKBACK_NS = 10_000_000_000;
         static readonly ulong LOOKBACK_NS = 1_000_000_000;
 
-        // static readonly int WAIT_DUR = 5_000;
-        static readonly int WAIT_DUR = 245_000;
-
         Random rand = new Random();
         HashSet<ulong> sources;
+        byte[] buf;
+        TcpClient client;
+        NetworkStream stream;
 
-        public QueryClient(string server, int port)
+        public QueryClient(string server, int port, bool usePerfSources)
         {
             try
             {
-                using TcpClient client = ConnectWithRetry(server, port);
+                client = ConnectWithRetry(server, port);
                 Console.WriteLine("Client connected");
-                NetworkStream stream = client.GetStream();
+                stream = client.GetStream();
 
-                var buf = new byte[1L << 21];
+                buf = new byte[1L << 21];
 
                 // ExperimentStart message
                 var msgSize = ReadMessage(stream, buf);
                 var expStartMsg = ExperimentStart.Decode(buf);
-                sources = expStartMsg.Sources;
-                Console.WriteLine($"Choosing from {expStartMsg.Sources.Count} sources");
-
-                Thread.Sleep(WAIT_DUR);
-
-                while (DoQuery(stream, buf))
+                if (usePerfSources)
                 {
+                    sources = expStartMsg.PerfSources;
+                    Console.WriteLine($"Choosing from {expStartMsg.PerfSources.Count} perf sources");
+                }
+                else
+                {
+                    sources = expStartMsg.Sources;
+                    Console.WriteLine($"Choosing from {expStartMsg.Sources.Count} sources");
                 }
             }
             catch (Exception e)
@@ -67,9 +102,28 @@ namespace FasterLogQuerier
             }
         }
 
+        public void Dispose()
+        {
+            client.Dispose();
+        }
+
         // Issue and process a query. Returning whether the client should continue
         // issue another query.
-        bool DoQuery(NetworkStream stream, byte[] buf)
+        public bool DoQuery()
+        {
+            return DoQueryInternal();
+            //             try
+            //             {
+            //                 return DoQueryInternal();
+            //             }
+            //             catch (Exception e)
+            //             {
+            //                 Console.WriteLine($"Query exception: {e}");
+            //                 return true;
+            //             }
+        }
+
+        bool DoQueryInternal()
         {
             var sampleCounts = 0;
             var blocksScanned = 0;
@@ -83,27 +137,39 @@ namespace FasterLogQuerier
             {
                 Write(stream, query.Encode());
 
+                var start = Stopwatch.GetTimestamp();
                 var msgSize = ReadMessage(stream, buf);
                 if (!BlockReply.IsServerActive(buf))
                 {
                     return false;
                 }
+                // if (blocksScanned % 50 == 0)
+                // {
+                //     Console.WriteLine("Read {0} ns", Stopwatch.GetTimestamp() - start);
+                // }
 
                 // the first byte is the active byte
                 var block = new Span<byte>(buf, 1, (int)msgSize - 1);
 
+                start = Stopwatch.GetTimestamp();
                 var done = ProcessBlock(block, query, out ulong nextAddr, out int sourceSampleCount);
+                // if (blocksScanned % 50 == 0)
+                // {
+                //     Console.WriteLine("Process {0} ns", Stopwatch.GetTimestamp() - start);
+                // }
                 sampleCounts += sourceSampleCount;
                 blocksScanned++;
                 if (done)
                 {
-                    Console.WriteLine("Finished query processing");
                     break;
                 }
 
                 // ask server for this block
                 query.NextBlockAddr = nextAddr;
-                Console.WriteLine($"processing block {blocksScanned}, next addr {nextAddr}");
+                // if (blocksScanned % 10 == 0)
+                // {
+                //     Console.WriteLine($"processing block {blocksScanned}, next addr {nextAddr}");
+                // }
             }
 
             Console.WriteLine($"Query done, {sw.ElapsedMilliseconds} ms {sampleCounts} samples {blocksScanned} blocks scanned");
@@ -113,8 +179,6 @@ namespace FasterLogQuerier
 
         bool ProcessBlock(Span<byte> block, Query q, out ulong nextAddr, out int sourceSampleCount)
         {
-            // Console.WriteLine($"Processing block of size {block.Length}");
-
             nextAddr = 0;
             sourceSampleCount = 0;
 
@@ -144,8 +208,6 @@ namespace FasterLogQuerier
         // Queries the block by scanning, returning whether the query is done.
         static bool ProcessBlockSamples(Span<byte> sampleBytes, Query q, out int sourceSampleCount)
         {
-            // Console.WriteLine($"Processing decompressed samples of size {sampleBytes.Length}");
-
             sourceSampleCount = 0;
             var done = false;
             uint sampleOffset = 0;
@@ -167,7 +229,6 @@ namespace FasterLogQuerier
                 {
                     sourceSampleCount++;
                 }
-                // Console.WriteLine($"Count {sourceSampleCount} offset {sampleOffset} Len {sampleBytes.Length}");
                 sampleOffset += Point.GetSampleSize(currSample);
             }
         }
@@ -198,7 +259,6 @@ namespace FasterLogQuerier
         {
             ReadNBytes(stream, bytes, 4);
             var size = BinaryPrimitives.ReadUInt32BigEndian(new Span<byte>(bytes, 0, 4));
-            // Console.WriteLine($"Reading message of size {size}");
             ReadNBytes(stream, bytes, (int)size);
             return size;
         }
@@ -214,9 +274,7 @@ namespace FasterLogQuerier
             var remaining = size;
             while (remaining > 0)
             {
-                // Console.WriteLine($"reading size {remaining} at offset {start}");
                 var nread = stream.Read(bytes, start, remaining);
-                // Console.WriteLine($"read {nread} bytes");
                 start += nread;
                 remaining -= nread;
                 if (remaining > 0 && nread == 0)

@@ -7,11 +7,11 @@ namespace FasterLogQuerier
 {
     public class ExperimentStart
     {
-        public HashSet<ulong> Sources { get; }
+        public HashSet<ulong> Sources { get; set; }
+        public HashSet<ulong> PerfSources { get; set; }
 
-        public ExperimentStart(HashSet<ulong> s)
+        public ExperimentStart()
         {
-            Sources = s;
         }
 
         public byte[] Encode()
@@ -30,35 +30,73 @@ namespace FasterLogQuerier
                 bytes.AddRange(ulongBytes);
             }
 
+            // write # of perf sources
+            BinaryPrimitives.WriteUInt64BigEndian(ulongBytes.AsSpan(), (uint)PerfSources.Count());
+            bytes.AddRange(ulongBytes);
+
+            // write each source
+            foreach (var source in PerfSources)
+            {
+                BinaryPrimitives.WriteUInt64BigEndian(ulongBytes.AsSpan(), source);
+                bytes.AddRange(ulongBytes);
+            }
+
             return bytes.ToArray();
         }
 
         public static ExperimentStart Decode(byte[] bytes)
         {
+            var curr = 0;
+            // Read sources
             if (bytes.Length < 8)
             {
-                throw new Exception("ExperimentStart bytes does not contain size");
+                throw new Exception("ExperimentStart bytes does not contain number of sources");
             }
+            var numSources = (int)BinaryPrimitives.ReadUInt64BigEndian(new ReadOnlySpan<byte>(bytes, curr, 8));
+            curr += 8;
 
-            var size = BinaryPrimitives.ReadUInt64BigEndian(new ReadOnlySpan<byte>(bytes, 0, 8));
-
-            if (bytes.Length < (int)size + 8)
+            if (bytes.Length < curr + numSources * 8)
             {
-                throw new Exception("ExperimentStart bytes does not contain all sources");
+                throw new Exception("ExperimentStart does not contain all sources");
             }
-
             var sources = new HashSet<ulong>();
-            for (var i = 0; i < (int)size; i++)
+            for (var start = curr; start < curr + numSources * 8; start += 8)
             {
-                var start = 8 + i * 8;
                 var source = BinaryPrimitives.ReadUInt64BigEndian(new ReadOnlySpan<byte>(bytes, start, 8));
                 if (!sources.Add(source))
                 {
                     throw new Exception("ExperimentStart bytes contains duplicate sources");
                 }
             }
+            curr = curr + numSources * 8;
 
-            return new ExperimentStart(sources);
+            // Read perf sources
+            if (bytes.Length < curr + 8)
+            {
+                throw new Exception("ExperimentStart bytes does not contain perf source size");
+            }
+            var perfSourceSize = (int)BinaryPrimitives.ReadUInt64BigEndian(new ReadOnlySpan<byte>(bytes, curr, 8));
+            curr += 8;
+
+            if (bytes.Length < curr + perfSourceSize * 8)
+            {
+                throw new Exception("ExperimentStart bytes does not contain all sources");
+            }
+
+            var perfSources = new HashSet<ulong>();
+            for (var start = curr; start < curr + perfSourceSize * 8; start += 8)
+            {
+                var source = BinaryPrimitives.ReadUInt64BigEndian(new ReadOnlySpan<byte>(bytes, start, 8));
+                if (!perfSources.Add(source))
+                {
+                    throw new Exception("ExperimentStart bytes contains duplicate perf sources");
+                }
+            }
+
+            var expStartMsg = new ExperimentStart();
+            expStartMsg.PerfSources = perfSources;
+            expStartMsg.Sources = sources;
+            return expStartMsg;
         }
     }
 

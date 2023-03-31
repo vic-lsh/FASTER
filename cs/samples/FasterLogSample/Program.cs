@@ -38,10 +38,9 @@ namespace FasterLogSample
         // static readonly int TRACING_START_INDEX = 2_575_366;
         // static readonly int QUERY_START_INDEX = 32_912_623;
 
-        // static readonly int NUM_QUERIERS = 10;
-
         static FasterLog log;
 
+        static HashSet<ulong> allSources;
         static HashSet<ulong> perfSources;
 
         /// <summary>
@@ -55,8 +54,18 @@ namespace FasterLogSample
             var pointsSerialized = DataLoader.LoadSerializedSamplesWithTimestamp("data/serialized_samples");
             // var pointsSerialized = DataLoader.SaveSerializedSamplesToFile("/home/fsolleza/data/telemetry-samples");
 
-            perfSources = GetPerfSourceIds(pointsSerialized);
+            (allSources, perfSources) = GetSourceIds(pointsSerialized);
             Console.WriteLine($"Perf source ids: {perfSources.Count}");
+
+            long DELAY_NS = 1_000_000_000L * 30;
+            var baseTs = (ulong)(Stopwatch.GetTimestamp() + DELAY_NS);
+            RewriteTimestamps(pointsSerialized, baseTs);
+            if (Stopwatch.GetTimestamp() > (long)baseTs)
+            {
+                throw new Exception("Bad replay base timestamp: timestamp rewriting took longer than expected");
+            }
+            while (Stopwatch.GetTimestamp() < (long)baseTs) { }
+
             Interlocked.Exchange(ref dataReady, 1);
 
             // Create settings to write logs and commits at specified local path
@@ -78,6 +87,13 @@ namespace FasterLogSample
             queryServer.Join();
         }
 
+        static void RewriteTimestamps(List<(ulong, byte[])> pointsSerialized, ulong baseTs)
+        {
+            foreach (var (delta, point) in pointsSerialized)
+            {
+                Point.UpdateSerializedPointTimestamp(point, baseTs + delta);
+            }
+        }
 
         static void WriteReplay(List<(ulong, byte[])> pointsSerialized)
         {
@@ -96,8 +112,6 @@ namespace FasterLogSample
             var sampleBatchOffset = 0;
             var samplesBatched = 0;
             ulong prevLogicalAddress = 0;
-
-            // var enqueueTime = new List<(long, long)>();
 
             var compressBuf = new byte[8 /* prev block logical addr */ + LZ4Codec.MaximumOutputSize(sampleBatchSize)];
 
@@ -147,11 +161,6 @@ namespace FasterLogSample
                     Console.WriteLine("writer exception: {0}", e);
                 }
             }
-
-            // foreach (var t in enqueueTime)
-            // {
-            //     Console.WriteLine($"{t.Item1} {t.Item2}");
-            // }
         }
 
         static void BatchThread(ChannelWriter<byte[]> ch, List<(ulong, byte[])> pointsSerialized)
@@ -182,13 +191,6 @@ namespace FasterLogSample
 
                 for (var i = start; i < end; i++)
                 {
-                    var now = (ulong)Stopwatch.GetTimestamp();
-                    Point.UpdateSerializedPointTimestamp(pointsSerialized[i].Item2, now);
-                    if (Point.GetTimestampFromSerialized(pointsSerialized[i].Item2) != now)
-                    {
-                        throw new Exception("oh no");
-                    }
-
                     if (ch.TryWrite(pointsSerialized[i].Item2))
                     {
                         generated++;
@@ -391,22 +393,24 @@ namespace FasterLogSample
                     }
                 }
             }
-
         }
 
-        static HashSet<ulong> GetPerfSourceIds(List<(ulong, byte[])> pointsSerialized)
+        static (HashSet<ulong>, HashSet<ulong>) GetSourceIds(List<(ulong, byte[])> pointsSerialized)
         {
+            var perfSourceIds = new HashSet<ulong>();
             var sourceIds = new HashSet<ulong>();
 
             foreach ((_, var pointBytes) in pointsSerialized)
             {
+                var id = Point.GetSourceIdFromSerialized(pointBytes);
+                sourceIds.Add(id);
                 if (Point.IsType(pointBytes, OtelType.PerfTrace))
                 {
-                    sourceIds.Add(Point.GetSourceIdFromSerialized(pointBytes));
+                    perfSourceIds.Add(id);
                 }
             }
 
-            return sourceIds;
+            return (sourceIds, perfSourceIds);
         }
 
         static void QueryThread(HashSet<ulong> sources)
@@ -449,9 +453,7 @@ namespace FasterLogSample
             var sourceSampleCount = 0;
 
             // wait until data within the queried timerange is available
-            var reverseScanStartAddr = PollUntilMinTimestamp(q.MaxTimestamp, decmpBuffer);
-
-            // Console.WriteLine("Poll completed");
+            var succeeded = PollUntilMinTimestamp(q.SourceId, q.MaxTimestamp, decmpBuffer, out ulong reverseScanStartAddr);
 
             var currAddr = reverseScanStartAddr;
             while (true)
@@ -527,6 +529,7 @@ namespace FasterLogSample
         public static void QueryServer()
         {
             TcpListener server = null;
+
             try
             {
                 Int32 port = 13000;
@@ -564,28 +567,32 @@ namespace FasterLogSample
                     Thread.Sleep(10);
                 }
 
-                var expStart = new ExperimentStart(perfSources);
+                var expStart = new ExperimentStart();
+                expStart.PerfSources = perfSources;
+                expStart.Sources = allSources;
                 var expStartBytes = expStart.Encode();
                 Write(stream, expStartBytes);
 
                 while (true)
                 {
-                    var msgSize = ReadMessage(stream, bytes);
+                    uint msgSize = 0;
+                    try
+                    {
+                        msgSize = ReadMessage(stream, bytes);
+                    }
+                    catch (Exception)
+                    {
+                        break;
+                    }
                     var query = Query.Decode(new Span<byte>(bytes, 0, (int)msgSize));
                     HandleQuery(stream, query);
                 }
+                Console.WriteLine("Query serving thread: experiment completed");
             }
         }
 
         static void HandleQuery(NetworkStream stream, Query q)
         {
-            if (Interlocked.Read(ref completed) == 1)
-            {
-                var reply = BlockReply.InactiveReply();
-                Write(stream, reply.Encode());
-                return;
-            }
-
             if (q.IsNewQuery())
             {
                 Console.WriteLine($"new query {q.SourceId} {q.MinTimestamp} {q.MaxTimestamp} {q.NextBlockAddr}");
@@ -600,17 +607,26 @@ namespace FasterLogSample
         static void HandleNewQuery(NetworkStream stream, Query q)
         {
             var decompressBuf = new byte[sampleBatchSize];
-            var reverseScanStartAddr = PollUntilMinTimestamp(q.MaxTimestamp, decompressBuf);
+
+            var sw = new Stopwatch();
+            sw.Start();
+            var succeeded = PollUntilMinTimestamp(q.SourceId, q.MinTimestamp, decompressBuf, out ulong reverseScanStartAddr);
+            Console.WriteLine($"poll took {sw.ElapsedMilliseconds} ms");
+
+            if (!succeeded)
+            {
+                Console.WriteLine("Poll failed");
+                var reply = BlockReply.InactiveReply();
+                Write(stream, reply.Encode());
+                return;
+            }
             ReadBlockAndReply(stream, reverseScanStartAddr);
         }
 
         static void ReadBlockAndReply(NetworkStream stream, ulong addr)
         {
             // Console.WriteLine($"Going to read at {addr}");
-            // var start = Stopwatch.GetTimestamp();
             var (block, length) = log.ReadAsync((long)addr, MemoryPool<byte>.Shared).GetAwaiter().GetResult();
-            // var end = Stopwatch.GetTimestamp();
-            // Console.WriteLine($"read time {end - start}");
             if (block == null || length == 0)
             {
                 throw new Exception($"read null block at {addr}, committed until {log.CommittedUntilAddress}");
@@ -625,11 +641,14 @@ namespace FasterLogSample
             Write(stream, payload);
         }
 
-        static ulong PollUntilMinTimestamp(ulong timestamp, byte[] decompressed)
+        static bool PollUntilMinTimestamp(ulong source, ulong timestamp, byte[] decompressed, out ulong address)
         {
+            address = 0;
             ulong lastAddr = 0;
             ulong currAddr = 0;
+            var repeats = 3;
 
+            // while (repeats > 0)
             while (true)
             {
                 // read distinct block addr
@@ -680,13 +699,17 @@ namespace FasterLogSample
                     }
 
                     var currSample = blockSpan.Slice((int)sampleOffset);
+                    // if (Point.GetSourceIdFromSerialized(currSample) == source)
+                    // {
                     var ts = Point.GetTimestampFromSerialized(currSample);
                     if (ts > timestamp)
                     {
                         // Console.WriteLine($"ts {ts} is greater than ts {timestamp} at offset {sampleOffset}");
                         // samples have monotonically increasing timestamp
-                        return currAddr;
+                        address = currAddr;
+                        return true;
                     }
+                    // }
 
                     var sampleSize = Point.GetSampleSize(currSample);
                     if (sampleSize == 0)
@@ -697,7 +720,10 @@ namespace FasterLogSample
                 }
 
                 block.Dispose();
+                repeats--;
             }
+
+            // return false;
         }
 
         private static byte[] ReadBlockAt(ulong address)
@@ -730,9 +756,7 @@ namespace FasterLogSample
             BinaryPrimitives.WriteUInt32BigEndian(sizeBytes.AsSpan(), (uint)bytes.Length);
 
             stream.Write(sizeBytes, 0, 4);
-            // Console.WriteLine($"wrote size bytes of {bytes.Length}");
             stream.Write(bytes, 0, bytes.Length);
-            // Console.WriteLine($"wrote {bytes.Length} bytes");
         }
 
         static uint ReadMessage(NetworkStream stream, byte[] bytes)
