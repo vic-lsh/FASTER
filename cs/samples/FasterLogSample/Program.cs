@@ -2,6 +2,8 @@
 // Licensed under the MIT license.
 
 using System;
+using System.Net;
+using System.Net.Sockets;
 using System.Buffers;
 using System.Threading.Channels;
 using System.Buffers.Binary;
@@ -12,6 +14,7 @@ using K4os.Compression.LZ4;
 using FASTER.core;
 using System.Linq;
 using FasterLogQuerier;
+using FasterLogData;
 
 namespace FasterLogSample
 {
@@ -29,31 +32,32 @@ namespace FasterLogSample
         static long samplesWritten = 0;
         static ulong lastIngestAddress = 0;
 
+        static long dataReady = 0;
         static long completed = 0;
 
         // static readonly int TRACING_START_INDEX = 2_575_366;
         // static readonly int QUERY_START_INDEX = 32_912_623;
 
-        static readonly int NUM_QUERIERS = 10;
+        // static readonly int NUM_QUERIERS = 10;
 
         static FasterLog log;
+
+        static HashSet<ulong> perfSources;
 
         /// <summary>
         /// Main program entry point
         /// </summary>
         static void Main()
         {
-            Console.WriteLine("stopwatch resolution {0}", Stopwatch.IsHighResolution);
-            Console.WriteLine("stopwatch frequency {0}", Stopwatch.Frequency);
-            long nanosecPerTick = (1000L * 1000L * 1000L) / Stopwatch.Frequency;
-            Console.WriteLine("nanos per tick {0}", nanosecPerTick);
-
+            var queryServer = new Thread(() => QueryServer());
+            queryServer.Start();
 
             var pointsSerialized = DataLoader.LoadSerializedSamplesWithTimestamp("data/serialized_samples");
             // var pointsSerialized = DataLoader.SaveSerializedSamplesToFile("/home/fsolleza/data/telemetry-samples");
 
-            var perfSources = GetPerfSourceIds(pointsSerialized);
+            perfSources = GetPerfSourceIds(pointsSerialized);
             Console.WriteLine($"Perf source ids: {perfSources.Count}");
+            Interlocked.Exchange(ref dataReady, 1);
 
             // Create settings to write logs and commits at specified local path
             using var config = new FasterLogSettings("./FasterLogSample", deleteDirOnDispose: false);
@@ -66,26 +70,12 @@ namespace FasterLogSample
 
             var monitor = new Thread(() => MonitorThread());
             var writer = new Thread(() => WriteReplay(pointsSerialized));
-
-            var queriers = new List<Thread>();
-            for (int i = 0; i < NUM_QUERIERS; i++)
-            {
-                queriers.Add(new Thread(() => QueryThread(perfSources)));
-            }
-
             monitor.Start();
             writer.Start();
-            for (int i = 0; i < NUM_QUERIERS; i++)
-            {
-                queriers[i].Start();
-            }
 
             monitor.Join();
             writer.Join();
-            for (int i = 0; i < NUM_QUERIERS; i++)
-            {
-                queriers[i].Join();
-            }
+            queryServer.Join();
         }
 
 
@@ -192,7 +182,12 @@ namespace FasterLogSample
 
                 for (var i = start; i < end; i++)
                 {
-                    Point.UpdateSerializedPointTimestamp(pointsSerialized[i].Item2, (ulong)Stopwatch.GetTimestamp());
+                    var now = (ulong)Stopwatch.GetTimestamp();
+                    Point.UpdateSerializedPointTimestamp(pointsSerialized[i].Item2, now);
+                    if (Point.GetTimestampFromSerialized(pointsSerialized[i].Item2) != now)
+                    {
+                        throw new Exception("oh no");
+                    }
 
                     if (ch.TryWrite(pointsSerialized[i].Item2))
                     {
@@ -527,7 +522,107 @@ namespace FasterLogSample
                 }
                 sampleOffset += Point.GetSampleSize(currSample);
             }
+        }
 
+        public static void QueryServer()
+        {
+            TcpListener server = null;
+            try
+            {
+                Int32 port = 13000;
+                IPAddress localAddr = IPAddress.Parse("127.0.0.1");
+
+                server = new TcpListener(localAddr, port);
+                server.Start();
+                Console.WriteLine("Query server started");
+
+                while (true)
+                {
+                    var conn = server.AcceptTcpClient();
+                    new Thread(() => HandleConn(conn)).Start();
+                }
+            }
+            catch (SocketException e)
+            {
+                Console.WriteLine("SocketException: {0}", e);
+            }
+            finally
+            {
+                server.Stop();
+            }
+        }
+
+        static void HandleConn(TcpClient client)
+        {
+            byte[] bytes = new byte[1L << 20];
+            using (client)
+            {
+                NetworkStream stream = client.GetStream();
+
+                while (Interlocked.Read(ref dataReady) == 0)
+                {
+                    Thread.Sleep(10);
+                }
+
+                var expStart = new ExperimentStart(perfSources);
+                var expStartBytes = expStart.Encode();
+                Write(stream, expStartBytes);
+
+                while (true)
+                {
+                    var msgSize = ReadMessage(stream, bytes);
+                    var query = Query.Decode(new Span<byte>(bytes, 0, (int)msgSize));
+                    HandleQuery(stream, query);
+                }
+            }
+        }
+
+        static void HandleQuery(NetworkStream stream, Query q)
+        {
+            if (Interlocked.Read(ref completed) == 1)
+            {
+                var reply = BlockReply.InactiveReply();
+                Write(stream, reply.Encode());
+                return;
+            }
+
+            if (q.IsNewQuery())
+            {
+                Console.WriteLine($"new query {q.SourceId} {q.MinTimestamp} {q.MaxTimestamp} {q.NextBlockAddr}");
+                HandleNewQuery(stream, q);
+            }
+            else
+            {
+                ReadBlockAndReply(stream, q.NextBlockAddr);
+            }
+        }
+
+        static void HandleNewQuery(NetworkStream stream, Query q)
+        {
+            var decompressBuf = new byte[sampleBatchSize];
+            var reverseScanStartAddr = PollUntilMinTimestamp(q.MaxTimestamp, decompressBuf);
+            ReadBlockAndReply(stream, reverseScanStartAddr);
+        }
+
+        static void ReadBlockAndReply(NetworkStream stream, ulong addr)
+        {
+            // Console.WriteLine($"Going to read at {addr}");
+            // var start = Stopwatch.GetTimestamp();
+            var (block, length) = log.ReadAsync((long)addr, MemoryPool<byte>.Shared).GetAwaiter().GetResult();
+            // var end = Stopwatch.GetTimestamp();
+            // Console.WriteLine($"read time {end - start}");
+            if (block == null || length == 0)
+            {
+                throw new Exception($"read null block at {addr}, committed until {log.CommittedUntilAddress}");
+            }
+            var blockSpan = block.Memory.Span.Slice(0, length);
+
+            var payload = new byte[length + 1];
+            payload[0] = 1; // active byte
+            blockSpan.CopyTo(new Span<byte>(payload, 1, blockSpan.Length));
+
+            // TODO: optimize
+            Write(stream, payload);
         }
 
         static ulong PollUntilMinTimestamp(ulong timestamp, byte[] decompressed)
@@ -588,6 +683,7 @@ namespace FasterLogSample
                     var ts = Point.GetTimestampFromSerialized(currSample);
                     if (ts > timestamp)
                     {
+                        // Console.WriteLine($"ts {ts} is greater than ts {timestamp} at offset {sampleOffset}");
                         // samples have monotonically increasing timestamp
                         return currAddr;
                     }
@@ -625,6 +721,46 @@ namespace FasterLogSample
                 }
 
                 return buffer;
+            }
+        }
+
+        static void Write(NetworkStream stream, byte[] bytes)
+        {
+            var sizeBytes = new byte[4];
+            BinaryPrimitives.WriteUInt32BigEndian(sizeBytes.AsSpan(), (uint)bytes.Length);
+
+            stream.Write(sizeBytes, 0, 4);
+            // Console.WriteLine($"wrote size bytes of {bytes.Length}");
+            stream.Write(bytes, 0, bytes.Length);
+            // Console.WriteLine($"wrote {bytes.Length} bytes");
+        }
+
+        static uint ReadMessage(NetworkStream stream, byte[] bytes)
+        {
+            ReadNBytes(stream, bytes, 4);
+            var size = BinaryPrimitives.ReadUInt32BigEndian(new Span<byte>(bytes, 0, 4));
+            ReadNBytes(stream, bytes, (int)size);
+            return size;
+        }
+
+        static void ReadNBytes(NetworkStream stream, byte[] bytes, int size)
+        {
+            if (bytes.Length < size)
+            {
+                throw new Exception($"Buffer is too small: buffer size {bytes.Length} requested size {size}");
+            }
+
+            var start = 0;
+            var remaining = size;
+            while (remaining > 0)
+            {
+                var nread = stream.Read(bytes, start, remaining);
+                start += nread;
+                remaining -= nread;
+                if (remaining > 0 && nread == 0)
+                {
+                    throw new Exception($"Stream terminated before reading the full message: requested {size}, {remaining} not received");
+                }
             }
         }
     }
