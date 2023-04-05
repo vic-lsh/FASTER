@@ -39,60 +39,9 @@ namespace FasterLogSample
         // static readonly int QUERY_START_INDEX = 32_912_623;
 
         static FasterLog log;
-        static byte[] staticEntry;
 
         static HashSet<ulong> allSources;
         static HashSet<ulong> perfSources;
-
-        // static void Main()
-        // {
-        //     var SIZE = 165000;
-        //     staticEntry = new byte[SIZE];
-        //     for (var i = 0; i < staticEntry.Length; i++)
-        //     {
-        //         staticEntry[i] = 0;
-        //     }
-
-        //     TcpListener server = null;
-
-        //     try
-        //     {
-        //         Int32 port = 13000;
-        //         IPAddress localAddr = IPAddress.Parse("127.0.0.1");
-
-        //         server = new TcpListener(localAddr, port);
-        //         server.Start();
-        //         Console.WriteLine("Query server started");
-
-        //         while (true)
-        //         {
-        //             var conn = server.AcceptTcpClient();
-        //             new Thread(() =>
-        //             {
-        //                 var stream = conn.GetStream();
-        //                 var buf = new byte[1L << 21];
-        //                 while (true)
-        //                 {
-        //                     // ReadMessage(stream, buf);
-        //                     ReadNBytes(stream, buf, 4);
-
-        //                     Write(stream, staticEntry);
-        //                     // stream.Write(staticEntry, 0, staticEntry.Length);
-        //                 }
-
-        //             }).Start();
-        //         }
-        //     }
-        //     catch (SocketException e)
-        //     {
-        //         Console.WriteLine("SocketException: {0}", e);
-        //     }
-        //     finally
-        //     {
-        //         server.Stop();
-        //     }
-
-        // }
 
         /// <summary>
         /// Main program entry point
