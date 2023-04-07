@@ -51,30 +51,60 @@ namespace FasterLogSample
             var queryServer = new Thread(() => QueryServer());
             queryServer.Start();
 
-            var pointsSerialized = DataLoader.LoadSerializedSamplesWithTimestamp("data/serialized_samples");
+            var (pointsMeta, pointBytes) = DataLoader.LoadSerializedSamplesWithTimestamp("serialized_samples");
             // var pointsSerialized = DataLoader.SaveSerializedSamplesToFile("/home/fsolleza/data/telemetry-samples");
 
-            (allSources, perfSources) = GetSourceIds(pointsSerialized);
-            Console.WriteLine($"Perf source ids: {perfSources.Count}");
+            // (allSources, perfSources) = GetSourceIds(pointsSerialized);
+            // Console.WriteLine($"Perf source ids: {perfSources.Count}");
 
 
-            // Create settings to write logs and commits at specified local path
-            using var config = new FasterLogSettings("./FasterLogSample", deleteDirOnDispose: false);
-            config.MemorySize = 1L << 30;
-            config.PageSize = 1L << 24;
-            config.AutoCommit = true;
+            // // Create settings to write logs and commits at specified local path
+            // using var config = new FasterLogSettings("./FasterLogSample", deleteDirOnDispose: false);
+            // config.MemorySize = 1L << 30;
+            // config.PageSize = 1L << 24;
+            // config.AutoCommit = true;
 
-            // FasterLog will recover and resume if there is a previous commit found
-            log = new FasterLog(config);
+            // // FasterLog will recover and resume if there is a previous commit found
+            // log = new FasterLog(config);
 
-            var monitor = new Thread(() => MonitorThread());
-            var writer = new Thread(() => WriteReplay(pointsSerialized));
-            monitor.Start();
-            writer.Start();
+            // var monitor = new Thread(() => MonitorThread());
+            // var writer = new Thread(() => WriteReplay(pointsSerialized));
+            // monitor.Start();
+            // writer.Start();
 
-            monitor.Join();
-            writer.Join();
-            queryServer.Join();
+            // monitor.Join();
+            // writer.Join();
+            // queryServer.Join();
+        }
+
+        static void WriteData()
+        {
+            var sw = new Stopwatch();
+            sw.Start();
+            var last = sw.ElapsedMilliseconds;
+            var durationMs = 1000;
+
+            var entry = new byte[160_000];
+            for (var i = 0; i < entry.Length; i++)
+            {
+                entry[i] = (byte)i;
+            }
+
+            var byteCount = 0;
+
+            while (true)
+            {
+                log.Enqueue(entry);
+                byteCount += entry.Length;
+                var now = sw.ElapsedMilliseconds;
+                if ((now - last) > durationMs)
+                {
+                    var bytesPerSec = (double)byteCount / ((now - last) * 1000.0);
+                    Console.WriteLine("mb per sec: {0}", bytesPerSec);
+                    last = now;
+                    byteCount = 0;
+                }
+            }
         }
 
         static void RewriteTimestamps(List<(ulong, byte[])> pointsSerialized, ulong baseTs)
@@ -254,6 +284,7 @@ namespace FasterLogSample
             // var idx = 2_575_366;
             var idx = 0;
             var firstTimestamp = pointsSerialized[idx].Item1;
+            Console.WriteLine("first ts: {0}", firstTimestamp);
 
             Stopwatch sw = new Stopwatch();
             sw.Start();
@@ -476,23 +507,24 @@ namespace FasterLogSample
             }
         }
 
-        static (HashSet<ulong>, HashSet<ulong>) GetSourceIds(List<(ulong, byte[])> pointsSerialized)
-        {
-            var perfSourceIds = new HashSet<ulong>();
-            var sourceIds = new HashSet<ulong>();
+        // static (HashSet<ulong>, HashSet<ulong>) GetSourceIds(List<(ulong, int, int)> pointsMeta, List<byte> points)
+        // {
+        //     var perfSourceIds = new HashSet<ulong>();
+        //     var sourceIds = new HashSet<ulong>();
 
-            foreach ((_, var pointBytes) in pointsSerialized)
-            {
-                var id = Point.GetSourceIdFromSerialized(pointBytes);
-                sourceIds.Add(id);
-                if (Point.IsType(pointBytes, OtelType.PerfTrace))
-                {
-                    perfSourceIds.Add(id);
-                }
-            }
 
-            return (sourceIds, perfSourceIds);
-        }
+        //     foreach ((_, var start, var len) in pointsMeta)
+        //     {
+        //         var id = Point.GetSourceIdFromSerialized(new Span<byte>(points, start, len));
+        //         sourceIds.Add(id);
+        //         if (Point.IsType(pointBytes, OtelType.PerfTrace))
+        //         {
+        //             perfSourceIds.Add(id);
+        //         }
+        //     }
+
+        //     return (sourceIds, perfSourceIds);
+        // }
 
         static void QueryThread(HashSet<ulong> sources)
         {

@@ -50,6 +50,8 @@ namespace FasterLogData
         public static List<byte[]> LoadSerializedSamples(string filePath)
         {
             var points = new List<byte[]>();
+            points.EnsureCapacity(480_000_000);
+
             var rand = new Random();
             var erred = 0;
             foreach (string line in System.IO.File.ReadLines(filePath))
@@ -82,12 +84,17 @@ namespace FasterLogData
             return points;
         }
 
-        public static List<(ulong, byte[])> LoadSerializedSamplesWithTimestamp(string filePath)
+        public static (List<(ulong /* tsdelta */, int /* offset */, int /* len */)>, List<byte>) LoadSerializedSamplesWithTimestamp(string filePath)
         {
-            var points = new List<(ulong, byte[])>();
+            var pointBytes = new List<byte>();
+            var pointsMeta = new List<(ulong, int, int)>();
+
+            pointBytes.EnsureCapacity(Int32.MaxValue);
+
             var ulongBytes = new byte[8];
 
             ulong totalSize = 0;
+            int curr = 0;
 
             using (BinaryReader reader = new BinaryReader(new FileStream(filePath, FileMode.Open)))
             {
@@ -110,25 +117,40 @@ namespace FasterLogData
                     }
                     var serializationSize = BinaryPrimitives.ReadUInt64BigEndian(ulongBytes.AsSpan<byte>());
 
-                    var serialized = new byte[serializationSize];
-                    if (reader.Read(serialized, 0, (int)serializationSize) != (int)serializationSize)
-                    {
-                        throw new Exception("Failed to read the entire serialized sample");
-                    }
-                    points.Add((tsDelta, serialized));
-                    totalSize += (ulong)serialized.Length;
+                    // var serialized = new byte[serializationSize];
+                    // if (reader.Read(serialized, 0, (int)serializationSize) != (int)serializationSize)
+                    // {
+                    //     throw new Exception("Failed to read the entire serialized sample");
+                    // }
 
-                    if (points.Count % 1000000 == 0)
+                    for (var i = 0; i < (int)serializationSize; i++)
                     {
-                        Console.WriteLine("loaded {0} samples", points.Count);
+                        pointBytes.Add(0);
+                    }
+
+                    var readOutput = System.Runtime.InteropServices.CollectionsMarshal.AsSpan<byte>(pointBytes)
+                        .Slice(curr, (int)serializationSize);
+                    if (reader.Read(readOutput) != (int)serializationSize)
+                    {
+
+                    }
+
+                    pointsMeta.Add((tsDelta, curr, (int)serializationSize));
+                    curr += (int)serializationSize;
+
+                    totalSize += serializationSize;
+
+                    if (pointsMeta.Count % 1000000 == 0)
+                    {
+                        Console.WriteLine("loaded {0} samples", pointsMeta.Count);
                     }
                 }
             }
 
-            Console.WriteLine("Read {0} samples", points.Count);
+            Console.WriteLine("Read {0} samples", pointsMeta.Count);
             Console.WriteLine("Total size {0} ", totalSize);
 
-            return points;
+            return (pointsMeta, pointBytes);
         }
 
         public static List<(ulong, byte[])> SaveSerializedSamplesToFile(string filePath)
