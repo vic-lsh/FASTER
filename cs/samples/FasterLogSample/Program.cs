@@ -57,16 +57,6 @@ namespace FasterLogSample
             (allSources, perfSources) = GetSourceIds(pointsSerialized);
             Console.WriteLine($"Perf source ids: {perfSources.Count}");
 
-            long DELAY_NS = 1_000_000_000L * 30;
-            var baseTs = (ulong)(Stopwatch.GetTimestamp() + DELAY_NS);
-            RewriteTimestamps(pointsSerialized, baseTs);
-            if (Stopwatch.GetTimestamp() > (long)baseTs)
-            {
-                throw new Exception("Bad replay base timestamp: timestamp rewriting took longer than expected");
-            }
-            while (Stopwatch.GetTimestamp() < (long)baseTs) { }
-
-            Interlocked.Exchange(ref dataReady, 1);
 
             // Create settings to write logs and commits at specified local path
             using var config = new FasterLogSettings("./FasterLogSample", deleteDirOnDispose: false);
@@ -163,9 +153,100 @@ namespace FasterLogSample
             }
         }
 
+        static void BatchWithTimeLimit(ChannelWriter<byte[]> ch, List<(ulong, byte[])> pointsSerialized, int durationMs)
+        {
+            var batchSize = 1024;
+            var generated = 0;
+            var chDropped = 0;
+            var lagDropped = 0;
+
+            // var idx = 2_575_366;
+            var idx = 0;
+            var firstTimestamp = pointsSerialized[idx].Item1;
+
+            Stopwatch sw = new Stopwatch();
+            sw.Start();
+            var lastMs = sw.ElapsedMilliseconds;
+            var startNs = (ulong)Stopwatch.GetTimestamp();
+
+            while (sw.ElapsedMilliseconds < durationMs)
+            {
+                var start = idx;
+                var end = Math.Min(start + batchSize, pointsSerialized.Count());
+                var endTimestamp = pointsSerialized[end - 1].Item1;
+                while (end < pointsSerialized.Count() && pointsSerialized[end].Item1 == endTimestamp)
+                {
+                    end++;
+                }
+
+                for (var i = start; i < end; i++)
+                {
+                    if (ch.TryWrite(pointsSerialized[i].Item2))
+                    {
+                        generated++;
+                    }
+                    else
+                    {
+                        chDropped++;
+                    }
+                }
+                idx = end;
+                Interlocked.Exchange(ref samplesGenerated, generated);
+
+                if (idx == pointsSerialized.Count())
+                {
+                    break;
+                }
+
+                var elapsedNs = (ulong)Stopwatch.GetTimestamp() - startNs;
+                var expected = pointsSerialized[idx].Item1 - firstTimestamp;
+
+                if (expected > elapsedNs)
+                {
+                    while (expected > (ulong)Stopwatch.GetTimestamp() - startNs)
+                    {
+                    }
+                }
+                else
+                {
+                    while (pointsSerialized[idx].Item1 < elapsedNs && idx < pointsSerialized.Count())
+                    {
+                        idx++;
+                        lagDropped++;
+                    }
+                    Interlocked.Exchange(ref timeLagDropped, lagDropped);
+                    Interlocked.Exchange(ref chanFullDropped, chDropped);
+                }
+            }
+        }
+
         static void BatchThread(ChannelWriter<byte[]> ch, List<(ulong, byte[])> pointsSerialized)
         {
-            var batchSize = 10;
+            Console.WriteLine("WARMUP BEGINS");
+            BatchWithTimeLimit(ch, pointsSerialized, 120_000);
+            Console.WriteLine("WARMUP ENDS");
+
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+
+            long DELAY_NS = 1_000_000_000L * 20;
+            var baseTs = (ulong)(Stopwatch.GetTimestamp() + DELAY_NS);
+
+            RewriteTimestamps(pointsSerialized, baseTs);
+            if (Stopwatch.GetTimestamp() > (long)baseTs)
+            {
+                throw new Exception("Bad replay base timestamp: timestamp rewriting took longer than expected");
+            }
+            while (Stopwatch.GetTimestamp() < (long)baseTs) { }
+
+            Interlocked.Exchange(ref dataReady, 1);
+
+            Interlocked.Exchange(ref samplesWritten, 0);
+            Interlocked.Exchange(ref samplesGenerated, 0);
+            Interlocked.Exchange(ref chanFullDropped, 0);
+            Interlocked.Exchange(ref timeLagDropped, 0);
+
+            var batchSize = 1024;
             var generated = 0;
             var chDropped = 0;
             var lagDropped = 0;
