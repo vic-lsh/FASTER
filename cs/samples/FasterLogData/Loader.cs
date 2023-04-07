@@ -85,6 +85,7 @@ namespace FasterLogData
         public static List<(ulong, byte[])> LoadSerializedSamplesWithTimestamp(string filePath)
         {
             var points = new List<(ulong, byte[])>();
+            points.EnsureCapacity(450_000_000);
             var ulongBytes = new byte[8];
 
             ulong totalSize = 0;
