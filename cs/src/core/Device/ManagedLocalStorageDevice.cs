@@ -39,8 +39,8 @@ namespace FASTER.core
         /// </summary>
         private int numPending = 0;
 
-        // private BlockingCollection<StorageReq> reqs;
-        private ConcurrentQueue<StorageReq> reqs;
+        private BlockingCollection<StorageReq> reqs;
+        // private ConcurrentQueue<StorageReq> reqs;
 
         private bool _disposed;
 
@@ -59,8 +59,8 @@ namespace FASTER.core
             pool = new(1, 1);
             ThrottleLimit = 120;
 
-            // reqs = new BlockingCollection<StorageReq>(new ConcurrentQueue<StorageReq>(), 100000000);
-            reqs = new ConcurrentQueue<StorageReq>();
+            reqs = new BlockingCollection<StorageReq>(new ConcurrentQueue<StorageReq>(), 100000000);
+            // reqs = new ConcurrentQueue<StorageReq>();
             new Thread(() => BackgroundWriter()).Start();
 
             string path = new FileInfo(filename).Directory.FullName;
@@ -284,7 +284,7 @@ namespace FASTER.core
                                       DeviceIOCompletionCallback callback,
                                       object context)
         {
-            reqs.Enqueue(new StorageReq()
+            reqs.Add(new StorageReq()
             {
                 sourceAddress = sourceAddress,
                 segmentId = segmentId,
@@ -461,12 +461,14 @@ namespace FASTER.core
         {
             while (true)
             {
-                StorageReq req;
-                if (reqs.TryDequeue(out req))
-                {
-                    WriteInternal(req.sourceAddress, req.segmentId, req.destinationAddress, req.numBytesToWrite, req.callback, req.context);
+                StorageReq req = reqs.Take();
+                WriteInternal(req.sourceAddress, req.segmentId, req.destinationAddress, req.numBytesToWrite, req.callback, req.context);
+                // StorageReq req;
+                // if (reqs.TryDequeue(out req))
+                // {
+                //     WriteInternal(req.sourceAddress, req.segmentId, req.destinationAddress, req.numBytesToWrite, req.callback, req.context);
 
-                }
+                // }
             }
         }
 
