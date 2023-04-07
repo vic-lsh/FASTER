@@ -639,7 +639,8 @@ namespace FasterLogSample
 
         static void HandleConn(TcpClient client)
         {
-            byte[] bytes = new byte[1L << 20];
+            byte[] decodeBuf = new byte[1L << 20];
+            var decompressBuf = new byte[sampleBatchSize];
             using (client)
             {
                 NetworkStream stream = client.GetStream();
@@ -660,39 +661,37 @@ namespace FasterLogSample
                     uint msgSize = 0;
                     try
                     {
-                        msgSize = ReadMessage(stream, bytes);
+                        msgSize = ReadMessage(stream, decodeBuf);
                     }
                     catch (Exception)
                     {
                         break;
                     }
-                    var query = Query.Decode(new Span<byte>(bytes, 0, (int)msgSize));
-                    HandleQuery(stream, query);
+                    var query = Query.Decode(new Span<byte>(decodeBuf, 0, (int)msgSize));
+                    HandleQuery(stream, query, decompressBuf);
                 }
                 Console.WriteLine("Query serving thread: experiment completed");
             }
         }
 
-        static void HandleQuery(NetworkStream stream, Query q)
+        static void HandleQuery(NetworkStream stream, Query q, byte[] buf)
         {
             if (q.IsNewQuery())
             {
                 // Console.WriteLine($"new query {q.SourceId} {q.MinTimestamp} {q.MaxTimestamp} {q.NextBlockAddr}");
-                HandleNewQuery(stream, q);
+                HandleNewQuery(stream, q, buf);
             }
             else
             {
-                ReadBlockAndReply(stream, q.NextBlockAddr);
+                ReadBlockAndReply(stream, q.NextBlockAddr, buf);
             }
         }
 
-        static void HandleNewQuery(NetworkStream stream, Query q)
+        static void HandleNewQuery(NetworkStream stream, Query q, byte[] buf)
         {
-            var decompressBuf = new byte[sampleBatchSize];
-
             var sw = new Stopwatch();
             sw.Start();
-            var succeeded = PollUntilMinTimestamp(q.SourceId, q.MinTimestamp, decompressBuf, out ulong reverseScanStartAddr);
+            var succeeded = PollUntilMinTimestamp(q.SourceId, q.MinTimestamp, buf, out ulong reverseScanStartAddr);
             // Console.WriteLine($"poll took {sw.ElapsedMilliseconds} ms");
 
             if (!succeeded)
@@ -702,10 +701,10 @@ namespace FasterLogSample
                 Write(stream, reply.Encode());
                 return;
             }
-            ReadBlockAndReply(stream, reverseScanStartAddr);
+            ReadBlockAndReply(stream, reverseScanStartAddr, buf);
         }
 
-        static void ReadBlockAndReply(NetworkStream stream, ulong addr)
+        static void ReadBlockAndReply(NetworkStream stream, ulong addr, byte[] buf)
         {
             // Console.WriteLine($"Going to read at {addr}");
             var (block, length) = log.ReadAsync((long)addr, MemoryPool<byte>.Shared).GetAwaiter().GetResult();
@@ -715,12 +714,12 @@ namespace FasterLogSample
             }
             var blockSpan = block.Memory.Span.Slice(0, length);
 
-            var payload = new byte[length + 1];
-            payload[0] = 1; // active byte
-            blockSpan.CopyTo(new Span<byte>(payload, 1, blockSpan.Length));
+            // construct payload
+            buf[0] = 1; // active byte
+            blockSpan.CopyTo(new Span<byte>(buf, 1, blockSpan.Length));
 
-            // TODO: optimize
-            Write(stream, payload);
+            Write(stream, new Span<byte>(buf, 0, blockSpan.Length + 1));
+            block.Dispose();
         }
 
         static bool PollUntilMinTimestamp(ulong source, ulong timestamp, byte[] decompressed, out ulong address)
@@ -834,11 +833,16 @@ namespace FasterLogSample
 
         static void Write(NetworkStream stream, byte[] bytes)
         {
+            Write(stream, bytes.AsSpan());
+        }
+
+        static void Write(NetworkStream stream, ReadOnlySpan<byte> bytes)
+        {
             var sizeBytes = new byte[4];
             BinaryPrimitives.WriteUInt32BigEndian(sizeBytes.AsSpan(), (uint)bytes.Length);
 
             stream.Write(sizeBytes, 0, 4);
-            stream.Write(bytes, 0, bytes.Length);
+            stream.Write(bytes);
         }
 
         static uint ReadMessage(NetworkStream stream, byte[] bytes)
