@@ -227,7 +227,7 @@ namespace FasterLogData
             return ret;
         }
 
-        public static bool IsType(byte[] serialized, OtelType type)
+        public static bool IsType(Span<byte> serialized, OtelType type)
         {
             return serialized[TYPE_OFFSET] == (byte)type;
         }
@@ -254,9 +254,9 @@ namespace FasterLogData
             return ts;
         }
 
-        public static void UpdateSerializedPointTimestamp(byte[] serialized, ulong newTimestamp)
+        public static void UpdateSerializedPointTimestamp(Span<byte> serialized, ulong newTimestamp)
         {
-            BinaryPrimitives.WriteUInt64BigEndian(new Span<byte>(serialized, TIMESTAMP_OFFSET, 8), newTimestamp);
+            BinaryPrimitives.WriteUInt64BigEndian(serialized.Slice(TIMESTAMP_OFFSET, 8), newTimestamp);
         }
 
         public static uint GetSampleSize(Span<byte> serialized)

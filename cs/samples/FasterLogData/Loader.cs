@@ -6,8 +6,30 @@ using System.Buffers.Binary;
 
 namespace FasterLogData
 {
+    public class PointRef
+    {
+        public ulong TsDelta;
+        byte[] heap;
+        int index;
+        int len;
+
+        public PointRef(byte[] _heap, int _index, int _len, ulong _tsDelta)
+        {
+            heap = _heap;
+            index = _index;
+            len = _len;
+            TsDelta = _tsDelta;
+        }
+
+        public Span<byte> GetSpan()
+        {
+            return new Span<byte>(heap, index, len);
+        }
+    }
+
     public class DataLoader
     {
+        static readonly int NUM_SAMPLES = 447_055_756;
 
         public static List<Point> LoadSamples(string filePath)
         {
@@ -82,10 +104,15 @@ namespace FasterLogData
             return points;
         }
 
-        public static List<(ulong, byte[])> LoadSerializedSamplesWithTimestamp(string filePath)
+        public static PointRef[] LoadSerializedSamplesWithTimestamp(string filePath)
         {
-            var points = new List<(ulong, byte[])>();
-            points.EnsureCapacity(450_000_000);
+            var heapSize = 2_000_000_000;
+
+            var points = GC.AllocateArray<PointRef>(NUM_SAMPLES);
+            var pointsIdx = 0;
+            var currHeap = GC.AllocateArray<byte>(heapSize);
+            var heapOffset = 0;
+
             var ulongBytes = new byte[8];
 
             ulong totalSize = 0;
@@ -111,22 +138,31 @@ namespace FasterLogData
                     }
                     var serializationSize = BinaryPrimitives.ReadUInt64BigEndian(ulongBytes.AsSpan<byte>());
 
-                    var serialized = new byte[serializationSize];
-                    if (reader.Read(serialized, 0, (int)serializationSize) != (int)serializationSize)
+                    if (heapOffset + (int)serializationSize > currHeap.Length)
+                    {
+                        currHeap = GC.AllocateArray<byte>(heapSize);
+                        heapOffset = 0;
+                    }
+
+                    if (reader.Read(new Span<byte>(currHeap, heapOffset, (int)serializationSize)) != (int)serializationSize)
                     {
                         throw new Exception("Failed to read the entire serialized sample");
                     }
-                    points.Add((tsDelta, serialized));
-                    totalSize += (ulong)serialized.Length;
+                    var pointRef = new PointRef(currHeap, heapOffset, (int)serializationSize, tsDelta);
+                    heapOffset += (int)serializationSize;
 
-                    if (points.Count % 1000000 == 0)
+                    points[pointsIdx++] = pointRef;
+
+                    totalSize += serializationSize;
+
+                    if (pointsIdx % 1000000 == 0)
                     {
-                        Console.WriteLine("loaded {0} samples", points.Count);
+                        Console.WriteLine("loaded {0} samples", pointsIdx);
                     }
                 }
             }
 
-            Console.WriteLine("Read {0} samples", points.Count);
+            Console.WriteLine("Read {0} samples", pointsIdx);
             Console.WriteLine("Total size {0} ", totalSize);
 
             return points;

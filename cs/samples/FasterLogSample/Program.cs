@@ -77,17 +77,17 @@ namespace FasterLogSample
             queryServer.Join();
         }
 
-        static void RewriteTimestamps(List<(ulong, byte[])> pointsSerialized, ulong baseTs)
+        static void RewriteTimestamps(PointRef[] pointsSerialized, ulong baseTs)
         {
-            foreach (var (delta, point) in pointsSerialized)
+            foreach (var point in pointsSerialized)
             {
-                Point.UpdateSerializedPointTimestamp(point, baseTs + delta);
+                Point.UpdateSerializedPointTimestamp(point.GetSpan(), baseTs + point.TsDelta);
             }
         }
 
-        static void WriteReplay(List<(ulong, byte[])> pointsSerialized)
+        static void WriteReplay(PointRef[] pointsSerialized)
         {
-            var ch = Channel.CreateBounded<byte[]>(10_000);
+            var ch = Channel.CreateBounded<PointRef>(10_000);
 
             var producer = new Thread(() => WriteThread(ch.Reader, pointsSerialized));
             var consumer = new Thread(() => BatchThread(ch.Writer, pointsSerialized));
@@ -96,7 +96,7 @@ namespace FasterLogSample
             consumer.Start();
         }
 
-        static void WriteThread(ChannelReader<byte[]> ch, List<(ulong, byte[])> pointsSerialized)
+        static void WriteThread(ChannelReader<PointRef> ch, PointRef[] pointsSerialized)
         {
             var sampleBatch = new byte[sampleBatchSize];
             var sampleBatchOffset = 0;
@@ -113,10 +113,12 @@ namespace FasterLogSample
                 {
                     if (ch.TryRead(out var point))
                     {
-                        if (sampleBatchOffset + point.Length < sampleBatch.Length)
+                        var pointSpan = point.GetSpan();
+                        if (sampleBatchOffset + pointSpan.Length < sampleBatch.Length)
                         {
-                            Buffer.BlockCopy(point, 0, sampleBatch, sampleBatchOffset, point.Length);
-                            sampleBatchOffset += point.Length;
+                            // Buffer.BlockCopy(point, 0, sampleBatch, sampleBatchOffset, point.Length);
+                            pointSpan.CopyTo(new Span<byte>(sampleBatch, sampleBatchOffset, pointSpan.Length));
+                            sampleBatchOffset += pointSpan.Length;
                             samplesBatched++;
                         }
                         else
@@ -153,7 +155,7 @@ namespace FasterLogSample
             }
         }
 
-        static void BatchWithTimeLimit(ChannelWriter<byte[]> ch, List<(ulong, byte[])> pointsSerialized, int durationMs)
+        static void BatchWithTimeLimit(ChannelWriter<PointRef> ch, PointRef[] pointsSerialized, int durationMs)
         {
             var batchSize = 1024;
             var generated = 0;
@@ -162,7 +164,7 @@ namespace FasterLogSample
 
             // var idx = 2_575_366;
             var idx = 0;
-            var firstTimestamp = pointsSerialized[idx].Item1;
+            var firstTimestamp = pointsSerialized[idx].TsDelta;
 
             Stopwatch sw = new Stopwatch();
             sw.Start();
@@ -173,15 +175,15 @@ namespace FasterLogSample
             {
                 var start = idx;
                 var end = Math.Min(start + batchSize, pointsSerialized.Count());
-                var endTimestamp = pointsSerialized[end - 1].Item1;
-                while (end < pointsSerialized.Count() && pointsSerialized[end].Item1 == endTimestamp)
+                var endTimestamp = pointsSerialized[end - 1].TsDelta;
+                while (end < pointsSerialized.Count() && pointsSerialized[end].TsDelta == endTimestamp)
                 {
                     end++;
                 }
 
                 for (var i = start; i < end; i++)
                 {
-                    if (ch.TryWrite(pointsSerialized[i].Item2))
+                    if (ch.TryWrite(pointsSerialized[i]))
                     {
                         generated++;
                     }
@@ -199,7 +201,7 @@ namespace FasterLogSample
                 }
 
                 var elapsedNs = (ulong)Stopwatch.GetTimestamp() - startNs;
-                var expected = pointsSerialized[idx].Item1 - firstTimestamp;
+                var expected = pointsSerialized[idx].TsDelta - firstTimestamp;
 
                 if (expected > elapsedNs)
                 {
@@ -209,7 +211,7 @@ namespace FasterLogSample
                 }
                 else
                 {
-                    while (pointsSerialized[idx].Item1 < elapsedNs && idx < pointsSerialized.Count())
+                    while (pointsSerialized[idx].TsDelta < elapsedNs && idx < pointsSerialized.Count())
                     {
                         idx++;
                         lagDropped++;
@@ -273,7 +275,7 @@ namespace FasterLogSample
 
             // var idx = 2_575_366;
             var idx = 0;
-            var firstTimestamp = pointsSerialized[idx].Item1;
+            var firstTimestamp = pointsSerialized[idx].TsDelta;
 
             Stopwatch sw = new Stopwatch();
             sw.Start();
@@ -284,15 +286,15 @@ namespace FasterLogSample
             {
                 var start = idx;
                 var end = Math.Min(start + batchSize, pointsSerialized.Count());
-                var endTimestamp = pointsSerialized[end - 1].Item1;
-                while (end < pointsSerialized.Count() && pointsSerialized[end].Item1 == endTimestamp)
+                var endTimestamp = pointsSerialized[end - 1].TsDelta;
+                while (end < pointsSerialized.Count() && pointsSerialized[end].TsDelta == endTimestamp)
                 {
                     end++;
                 }
 
                 for (var i = start; i < end; i++)
                 {
-                    if (ch.TryWrite(pointsSerialized[i].Item2))
+                    if (ch.TryWrite(pointsSerialized[i]))
                     {
                         generated++;
                     }
@@ -300,6 +302,7 @@ namespace FasterLogSample
                     {
                         chDropped++;
                     }
+                    pointsSerialized[i] = null; // make point more GC-able?
                 }
                 idx = end;
                 Interlocked.Exchange(ref samplesGenerated, generated);
@@ -310,7 +313,7 @@ namespace FasterLogSample
                 }
 
                 var elapsedNs = (ulong)Stopwatch.GetTimestamp() - startNs;
-                var expected = pointsSerialized[idx].Item1 - firstTimestamp;
+                var expected = pointsSerialized[idx].TsDelta - firstTimestamp;
 
                 if (expected > elapsedNs)
                 {
@@ -320,7 +323,7 @@ namespace FasterLogSample
                 }
                 else
                 {
-                    while (pointsSerialized[idx].Item1 < elapsedNs && idx < pointsSerialized.Count())
+                    while (pointsSerialized[idx].TsDelta < elapsedNs && idx < pointsSerialized.Count())
                     {
                         idx++;
                         lagDropped++;
@@ -497,16 +500,17 @@ namespace FasterLogSample
             }
         }
 
-        static (HashSet<ulong>, HashSet<ulong>) GetSourceIds(List<(ulong, byte[])> pointsSerialized)
+        static (HashSet<ulong>, HashSet<ulong>) GetSourceIds(PointRef[] pointsSerialized)
         {
             var perfSourceIds = new HashSet<ulong>();
             var sourceIds = new HashSet<ulong>();
 
-            foreach ((_, var pointBytes) in pointsSerialized)
+            foreach (var point in pointsSerialized)
             {
-                var id = Point.GetSourceIdFromSerialized(pointBytes);
+                var pointSpan = point.GetSpan();
+                var id = Point.GetSourceIdFromSerialized(pointSpan);
                 sourceIds.Add(id);
-                if (Point.IsType(pointBytes, OtelType.PerfTrace))
+                if (Point.IsType(pointSpan, OtelType.PerfTrace))
                 {
                     perfSourceIds.Add(id);
                 }
