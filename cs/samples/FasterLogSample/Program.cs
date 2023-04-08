@@ -51,7 +51,7 @@ namespace FasterLogSample
             var queryServer = new Thread(() => QueryServer());
             queryServer.Start();
 
-            var pointsSerialized = DataLoader.LoadSerializedSamplesWithTimestamp("data/serialized_samples");
+            var pointsSerialized = DataLoader.LoadSerializedSamplesWithTimestamp("/home/sli/dev/faster/cs/samples/FasterLogSample/data/serialized_samples");
             // var pointsSerialized = DataLoader.SaveSerializedSamplesToFile("/home/fsolleza/data/telemetry-samples");
 
             (allSources, perfSources) = GetSourceIds(pointsSerialized);
@@ -75,6 +75,7 @@ namespace FasterLogSample
             monitor.Join();
             writer.Join();
             queryServer.Join();
+	    Console.WriteLine("Exiting");
         }
 
         static void RewriteTimestamps(PointRef[] pointsSerialized, ulong baseTs)
@@ -231,24 +232,24 @@ namespace FasterLogSample
             // GC.Collect();
             // GC.WaitForPendingFinalizers();
 
-            var reservedSize = 200_000_000_000;
-            while (reservedSize > 0)
-            {
-                var r = GC.TryStartNoGCRegion(reservedSize, reservedSize / 2, false);
-                if (r)
-                {
-                    Console.WriteLine("GC reserved {0}", reservedSize);
-                    break;
-                }
-                else
-                {
-                    reservedSize /= 2;
-                }
-            }
-            if (reservedSize == 0)
-            {
-                throw new Exception("No GC not working");
-            }
+            //var reservedSize = 200_000_000_000;
+            //while (reservedSize > 0)
+            //{
+            //    var r = GC.TryStartNoGCRegion(reservedSize, reservedSize / 2, false);
+            //    if (r)
+            //    {
+            //        Console.WriteLine("GC reserved {0}", reservedSize);
+            //        break;
+            //    }
+            //    else
+            //    {
+            //        reservedSize /= 2;
+            //    }
+            //}
+            //if (reservedSize == 0)
+            //{
+            //    throw new Exception("No GC not working");
+            //}
 
             long DELAY_NS = 1_000_000_000L * 30;
             var baseTs = (ulong)(Stopwatch.GetTimestamp() + DELAY_NS);
@@ -341,7 +342,7 @@ namespace FasterLogSample
             Console.WriteLine("DONE, dropped {0}", lagDropped + chDropped);
             ch.Complete();
             Interlocked.Exchange(ref completed, 1);
-            GC.EndNoGCRegion();
+            //GC.EndNoGCRegion();
         }
 
         static void MonitorThread()
@@ -505,6 +506,8 @@ namespace FasterLogSample
             var perfSourceIds = new HashSet<ulong>();
             var sourceIds = new HashSet<ulong>();
 
+	    Console.WriteLine("Beginning loop");
+	    var counter = 0;
             foreach (var point in pointsSerialized)
             {
                 var pointSpan = point.GetSpan();
@@ -514,7 +517,9 @@ namespace FasterLogSample
                 {
                     perfSourceIds.Add(id);
                 }
+		counter += 1;
             }
+	    Console.WriteLine("Done with loop");
 
             return (sourceIds, perfSourceIds);
         }

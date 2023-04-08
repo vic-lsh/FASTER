@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
 using Newtonsoft.Json;
 using System.IO;
 using System.Buffers.Binary;
@@ -9,11 +10,11 @@ namespace FasterLogData
     public class PointRef
     {
         public ulong TsDelta;
-        byte[] heap;
+        IntPtr heap;
         int index;
         int len;
 
-        public PointRef(byte[] _heap, int _index, int _len, ulong _tsDelta)
+        public PointRef(IntPtr _heap, int _index, int _len, ulong _tsDelta)
         {
             heap = _heap;
             index = _index;
@@ -23,8 +24,20 @@ namespace FasterLogData
 
         public Span<byte> GetSpan()
         {
-            return new Span<byte>(heap, index, len);
+            //return new Span<byte>(heap, index, len);
+	    Span<byte> sp;
+	    unsafe
+	    {
+		    sp = new Span<byte>(heap.ToPointer(), Int32.MaxValue);
+	    }
+	    return sp.Slice(index, len);
         }
+    }
+
+    public struct UnmanagedArray {
+	    public int length;
+	    public int capacity;
+	    public IntPtr ptr;
     }
 
     public class DataLoader
@@ -104,13 +117,53 @@ namespace FasterLogData
             return points;
         }
 
+	public static void LoadSerializedSamplesUnmanaged(string filePath) 
+	{
+		// 100gb data = 50 * Int32.MaxValue
+		// need to read bytes s.t. sample bytes are not split across arrays
+		var nArrays = 50;
+		var arraysPtr = Marshal.AllocHGlobal(nArrays * Marshal.SizeOf<IntPtr>());
+
+		// two arrays of size < Int32.MaxValue:
+		// array containing points into a span of bytes in an array in arraysPtr (IntPtr of array + offset)
+		// array containing length of span being pointed to
+		var nSamples = 500_000_000; // larger than the number of samples we have, should probably be accurate
+		var samplesBytesPtr = Marshal.AllocHGlobal(nSamples * Marshal.SizeOf<IntPtr>());
+		var samplesLenPtr = Marshal.AllocHGlobal(nSamples * Marshal.SizeOf<Int32>());
+
+		//var
+		//Span<UnmanagedArray> arraysSpan;
+		//unsafe
+		//{
+		//	arraysSpan = new Span<UnmanagedArray>(arraysPtr.ToPointer(), capacity);
+		//}
+
+		//arraysSpan[length].capacity = Int32.MaxValue;
+		//arraysSpan[length].ptr = Marshal.AllocHGlobal(Int32.MaxValue);
+		//arraysSpan[length].length = 0;
+
+		//using (BinaryReader reader = new BinaryReader(new FileStream(filePath, FileMode.Open)))
+		//{
+		//	while (true)
+		//	{
+		//	}
+		//}
+
+	}
+
         public static PointRef[] LoadSerializedSamplesWithTimestamp(string filePath)
         {
-            var heapSize = 2_000_000_000;
+            //var heapSize = 2_000_000_000;
 
-            var points = GC.AllocateArray<PointRef>(NUM_SAMPLES);
+            var points = GC.AllocateArray<PointRef>(284122360);
             var pointsIdx = 0;
-            var currHeap = GC.AllocateArray<byte>(heapSize);
+	    Span<byte> currHeap;
+	    var arraysPtr = Marshal.AllocHGlobal(Int32.MaxValue);
+	    unsafe
+	    {
+		    currHeap = new Span<byte>(arraysPtr.ToPointer(), Int32.MaxValue);
+	    }
+            //var currHeap = GC.AllocateArray<byte>(heapSize);
             var heapOffset = 0;
 
             var ulongBytes = new byte[8];
@@ -138,19 +191,26 @@ namespace FasterLogData
                     }
                     var serializationSize = BinaryPrimitives.ReadUInt64BigEndian(ulongBytes.AsSpan<byte>());
 
-                    if (heapOffset + (int)serializationSize > currHeap.Length)
+                    //if (heapOffset + (int)serializationSize > currHeap.Length) // avoid wrapping addition
+		    if (currHeap.Length - heapOffset < (int)serializationSize)
                     {
-                        currHeap = GC.AllocateArray<byte>(heapSize);
+			Console.WriteLine("Allocating another {0}", Int32.MaxValue);
+	    		arraysPtr = Marshal.AllocHGlobal(Int32.MaxValue);
+	    		unsafe
+	    		{
+	    		        currHeap = new Span<byte>(arraysPtr.ToPointer(), Int32.MaxValue);
+	    		}
                         heapOffset = 0;
                     }
 
-                    if (reader.Read(new Span<byte>(currHeap, heapOffset, (int)serializationSize)) != (int)serializationSize)
+                    if (reader.Read(currHeap.Slice(heapOffset, (int)serializationSize)) != (int)serializationSize)
                     {
                         throw new Exception("Failed to read the entire serialized sample");
                     }
-                    var pointRef = new PointRef(currHeap, heapOffset, (int)serializationSize, tsDelta);
+                    var pointRef = new PointRef(arraysPtr, heapOffset, (int)serializationSize, tsDelta);
                     heapOffset += (int)serializationSize;
 
+		    //Console.WriteLine("Here3");
                     points[pointsIdx++] = pointRef;
 
                     totalSize += serializationSize;
