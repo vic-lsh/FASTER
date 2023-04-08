@@ -38,20 +38,20 @@ namespace FasterLogQuerier
             var id = 0;
 
             var firstClient = new QueryClient(id++, conn, usePerfSources: false);
-            Thread.Sleep(150_000);
+            // Thread.Sleep(120_000);
+            Thread.Sleep(20_000);
             Console.WriteLine("low rate client begins query");
             new Thread(() =>
             {
                 var sw = new Stopwatch();
                 sw.Start();
-                while (sw.ElapsedMilliseconds < 115_000)
+                while (sw.ElapsedMilliseconds < 60_000)
                 {
                     firstClient.DoQuery();
                 }
             }).Start();
 
-            Thread.Sleep(115_000);
-            // Thread.Sleep(5_000);
+            Thread.Sleep(60_000);
             Console.WriteLine("perf clients begin query");
 
             var thrs = new List<Thread>();
@@ -62,7 +62,7 @@ namespace FasterLogQuerier
                     var c = new QueryClient(id++, conn, usePerfSources: true);
                     var sw = new Stopwatch();
                     sw.Start();
-                    while (sw.ElapsedMilliseconds < 70_000)
+                    while (sw.ElapsedMilliseconds < 150_000)
                     {
                         c.DoQuery();
                     }
