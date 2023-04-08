@@ -48,15 +48,18 @@ namespace FasterLogSample
         /// </summary>
         static void Main()
         {
+            var proc = Process.GetCurrentProcess();
+            proc.ProcessorAffinity = (System.IntPtr)(0b0111);
+            Console.WriteLine("Affinity: {0}", proc.ProcessorAffinity);
+
             var queryServer = new Thread(() => QueryServer());
             queryServer.Start();
 
-            var pointsSerialized = DataLoader.LoadSerializedSamplesWithTimestamp("/home/sli/dev/faster/cs/samples/FasterLogSample/data/serialized_samples");
+            var pointsSerialized = DataLoader.LoadSerializedSamplesWithTimestamp("serialized_samples");
             // var pointsSerialized = DataLoader.SaveSerializedSamplesToFile("/home/fsolleza/data/telemetry-samples");
 
             (allSources, perfSources) = GetSourceIds(pointsSerialized);
             Console.WriteLine($"Perf source ids: {perfSources.Count}");
-
 
             // Create settings to write logs and commits at specified local path
             using var config = new FasterLogSettings("./FasterLogSample", deleteDirOnDispose: false);
@@ -75,7 +78,7 @@ namespace FasterLogSample
             monitor.Join();
             writer.Join();
             queryServer.Join();
-	    Console.WriteLine("Exiting");
+            Console.WriteLine("Exiting");
         }
 
         static void RewriteTimestamps(PointRef[] pointsSerialized, ulong baseTs)
@@ -158,7 +161,7 @@ namespace FasterLogSample
 
         static void BatchWithTimeLimit(ChannelWriter<PointRef> ch, PointRef[] pointsSerialized, int durationMs)
         {
-            var batchSize = 1024;
+            var batchSize = 10;
             var generated = 0;
             var chDropped = 0;
             var lagDropped = 0;
@@ -225,9 +228,9 @@ namespace FasterLogSample
 
         static void BatchThread(ChannelWriter<PointRef> ch, PointRef[] pointsSerialized)
         {
-            Console.WriteLine("WARMUP BEGINS");
-            BatchWithTimeLimit(ch, pointsSerialized, 120_000);
-            Console.WriteLine("WARMUP ENDS");
+            // Console.WriteLine("WARMUP BEGINS");
+            // BatchWithTimeLimit(ch, pointsSerialized, 120_000);
+            // Console.WriteLine("WARMUP ENDS");
 
             // GC.Collect();
             // GC.WaitForPendingFinalizers();
@@ -303,7 +306,7 @@ namespace FasterLogSample
                     {
                         chDropped++;
                     }
-                    pointsSerialized[i] = null; // make point more GC-able?
+                    // pointsSerialized[i] = null; // make point more GC-able?
                 }
                 idx = end;
                 Interlocked.Exchange(ref samplesGenerated, generated);
@@ -506,8 +509,8 @@ namespace FasterLogSample
             var perfSourceIds = new HashSet<ulong>();
             var sourceIds = new HashSet<ulong>();
 
-	    Console.WriteLine("Beginning loop");
-	    var counter = 0;
+            Console.WriteLine("Beginning loop");
+            var counter = 0;
             foreach (var point in pointsSerialized)
             {
                 var pointSpan = point.GetSpan();
@@ -517,9 +520,9 @@ namespace FasterLogSample
                 {
                     perfSourceIds.Add(id);
                 }
-		counter += 1;
+                counter += 1;
             }
-	    Console.WriteLine("Done with loop");
+            Console.WriteLine("Done with loop");
 
             return (sourceIds, perfSourceIds);
         }
