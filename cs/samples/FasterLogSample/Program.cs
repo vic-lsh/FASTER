@@ -220,16 +220,35 @@ namespace FasterLogSample
             }
         }
 
-        static void BatchThread(ChannelWriter<byte[]> ch, List<(ulong, byte[])> pointsSerialized)
+        static void BatchThread(ChannelWriter<PointRef> ch, PointRef[] pointsSerialized)
         {
             Console.WriteLine("WARMUP BEGINS");
             BatchWithTimeLimit(ch, pointsSerialized, 120_000);
             Console.WriteLine("WARMUP ENDS");
 
-            GC.Collect();
-            GC.WaitForPendingFinalizers();
+            // GC.Collect();
+            // GC.WaitForPendingFinalizers();
 
-            long DELAY_NS = 1_000_000_000L * 20;
+            var reservedSize = 200_000_000_000;
+            while (reservedSize > 0)
+            {
+                var r = GC.TryStartNoGCRegion(reservedSize, reservedSize / 2, false);
+                if (r)
+                {
+                    Console.WriteLine("GC reserved {0}", reservedSize);
+                    break;
+                }
+                else
+                {
+                    reservedSize /= 2;
+                }
+            }
+            if (reservedSize == 0)
+            {
+                throw new Exception("No GC not working");
+            }
+
+            long DELAY_NS = 1_000_000_000L * 30;
             var baseTs = (ulong)(Stopwatch.GetTimestamp() + DELAY_NS);
 
             RewriteTimestamps(pointsSerialized, baseTs);
@@ -239,6 +258,7 @@ namespace FasterLogSample
             }
             while (Stopwatch.GetTimestamp() < (long)baseTs) { }
 
+            Console.WriteLine("WORkLOAD BEGINS");
             Interlocked.Exchange(ref dataReady, 1);
 
             Interlocked.Exchange(ref samplesWritten, 0);
@@ -318,6 +338,7 @@ namespace FasterLogSample
             Console.WriteLine("DONE, dropped {0}", lagDropped + chDropped);
             ch.Complete();
             Interlocked.Exchange(ref completed, 1);
+            GC.EndNoGCRegion();
         }
 
         static void MonitorThread()
