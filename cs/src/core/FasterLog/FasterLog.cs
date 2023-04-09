@@ -1607,7 +1607,7 @@ namespace FASTER.core
         {
             // Using count is safe as a fast filtering mechanism to reduce number of invocations despite concurrency
             if (ongoingCommitRequests.Count == 0 && commitInfo.ErrorCode == 0) return;
-            commitQueue.EnqueueAndTryWork(commitInfo, asTask: true);
+            commitQueue.EnqueueAndTryWork(commitInfo, asTask: false);
         }
 
         private unsafe bool TryEnqueueCommitRecord(ref FasterLogRecoveryInfo info)
