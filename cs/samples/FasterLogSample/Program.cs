@@ -292,7 +292,7 @@ namespace FasterLogSample
             Interlocked.Exchange(ref chanFullDropped, 0);
             Interlocked.Exchange(ref timeLagDropped, 0);
 
-            var batchSize = 1024;
+            var batchSize = 10;
             var generated = 0;
             var chDropped = 0;
             var lagDropped = 0;
