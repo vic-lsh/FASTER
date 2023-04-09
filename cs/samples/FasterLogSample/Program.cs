@@ -63,13 +63,14 @@ namespace FasterLogSample
 
             // Create settings to write logs and commits at specified local path
             using var config = new FasterLogSettings("./FasterLogSample", deleteDirOnDispose: false);
-            config.MemorySize = 1L << 30;
-            config.PageSize = 1L << 24;
-            config.AutoCommit = true;
+            // config.MemorySize = 1L << 28;
+            // config.PageSize = 1L << 27;
+            // config.AutoCommit = true;
 
             // FasterLog will recover and resume if there is a previous commit found
             log = new FasterLog(config);
 
+            new Thread(() => CommitThread()).Start();
             var monitor = new Thread(() => MonitorThread());
             var writer = new Thread(() => WriteReplay(pointsSerialized));
             monitor.Start();
@@ -79,6 +80,18 @@ namespace FasterLogSample
             writer.Join();
             queryServer.Join();
             Console.WriteLine("Exiting");
+        }
+
+        static void CommitThread()
+        {
+            while (true)
+            {
+                Thread.Sleep(1000);
+                var s = Stopwatch.GetTimestamp();
+                log.Commit(true);
+                var e = Stopwatch.GetTimestamp();
+                Console.WriteLine("Commit took {0}", e - s);
+            }
         }
 
         static void RewriteTimestamps(PointRef[] pointsSerialized, ulong baseTs)
@@ -106,9 +119,12 @@ namespace FasterLogSample
             var sampleBatchOffset = 0;
             var samplesBatched = 0;
             ulong prevLogicalAddress = 0;
+            long totalSize = 0;
 
             var compressBuf = new byte[8 /* prev block logical addr */ + LZ4Codec.MaximumOutputSize(sampleBatchSize)];
 
+            var sw = new Stopwatch();
+            sw.Start();
             var writeStart = Stopwatch.GetTimestamp();
 
             while (true)
@@ -138,6 +154,7 @@ namespace FasterLogSample
                             prevLogicalAddress = (ulong)log.Enqueue(new ReadOnlySpan<byte>(compressBuf, 0, 8 + encodedLength));
                             // var end = Stopwatch.GetTimestamp();
                             // enqueueTime.Add((end - writeStart, end - enqStart));
+                            totalSize += 8 + encodedLength;
 
                             Interlocked.Exchange(ref lastIngestAddress, prevLogicalAddress);
 
@@ -157,6 +174,9 @@ namespace FasterLogSample
                     Console.WriteLine("writer exception: {0}", e);
                 }
             }
+
+            var bytesPerSec = totalSize / (sw.ElapsedMilliseconds / 1000);
+            Console.WriteLine($"Total size: {totalSize}, bytes/s: {bytesPerSec}");
         }
 
         static void BatchWithTimeLimit(ChannelWriter<PointRef> ch, PointRef[] pointsSerialized, int durationMs)
@@ -509,7 +529,6 @@ namespace FasterLogSample
             var perfSourceIds = new HashSet<ulong>();
             var sourceIds = new HashSet<ulong>();
 
-            Console.WriteLine("Beginning loop");
             var counter = 0;
             foreach (var point in pointsSerialized)
             {
@@ -522,7 +541,6 @@ namespace FasterLogSample
                 }
                 counter += 1;
             }
-            Console.WriteLine("Done with loop");
 
             return (sourceIds, perfSourceIds);
         }

@@ -43,8 +43,7 @@ namespace FasterLogData
 
     public class DataLoader
     {
-        // static readonly int NUM_SAMPLES = 447_055_756;
-        static readonly int NUM_SAMPLES = 300_000_000;
+        static readonly int NUM_SAMPLES = 447_055_756;
 
         public static List<Point> LoadSamples(string filePath)
         {
