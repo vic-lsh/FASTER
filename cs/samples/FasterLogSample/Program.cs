@@ -48,9 +48,9 @@ namespace FasterLogSample
         /// </summary>
         static void Main()
         {
-            var proc = Process.GetCurrentProcess();
-            proc.ProcessorAffinity = (System.IntPtr)(0b0111);
-            Console.WriteLine("Affinity: {0}", proc.ProcessorAffinity);
+            // var proc = Process.GetCurrentProcess();
+            // proc.ProcessorAffinity = (System.IntPtr)(0b0111);
+            // Console.WriteLine("Affinity: {0}", proc.ProcessorAffinity);
 
             var queryServer = new Thread(() => QueryServer());
             queryServer.Start();
@@ -63,12 +63,14 @@ namespace FasterLogSample
 
             // Create settings to write logs and commits at specified local path
             using var config = new FasterLogSettings("./FasterLogSample", deleteDirOnDispose: false);
-            // config.MemorySize = 1L << 28;
-            // config.PageSize = 1L << 27;
-            // config.AutoCommit = true;
+            config.MemorySize = 1L << 30;
+            config.PageSize = 1L << 24;
+            config.AutoCommit = true;
 
             // FasterLog will recover and resume if there is a previous commit found
             log = new FasterLog(config);
+            // WriteCompressed(pointsSerialized);
+
 
             new Thread(() => CommitThread()).Start();
             var monitor = new Thread(() => MonitorThread());
@@ -90,7 +92,7 @@ namespace FasterLogSample
                 var s = Stopwatch.GetTimestamp();
                 log.Commit(true);
                 var e = Stopwatch.GetTimestamp();
-                Console.WriteLine("Commit took {0}", e - s);
+                // Console.WriteLine("Commit took {0}", e - s);
             }
         }
 
@@ -176,7 +178,7 @@ namespace FasterLogSample
             }
 
             var bytesPerSec = totalSize / (sw.ElapsedMilliseconds / 1000);
-            Console.WriteLine($"Total size: {totalSize}, bytes/s: {bytesPerSec}");
+            Console.WriteLine($"Total size: {totalSize.ToString("N0")}, bytes/s: {bytesPerSec.ToString("N0")}");
         }
 
         static void BatchWithTimeLimit(ChannelWriter<PointRef> ch, PointRef[] pointsSerialized, int durationMs)
@@ -362,7 +364,11 @@ namespace FasterLogSample
                 }
             }
 
-            Console.WriteLine("DONE, dropped {0}", lagDropped + chDropped);
+            var totalDropped = lagDropped + chDropped;
+            var dropRate = (float)totalDropped / (float)pointsSerialized.Length;
+
+            Console.WriteLine("DONE, dropped {0}, drop rate: {1}",
+                    (lagDropped + chDropped).ToString("N0"), dropRate);
             ch.Complete();
             Interlocked.Exchange(ref completed, 1);
             //GC.EndNoGCRegion();
@@ -393,8 +399,14 @@ namespace FasterLogSample
                 var chanDropRate = (chDrop - lastChanDropped) / ((now - lastMs) / 1000);
                 var lagDropRate = (lagDrop - lastLagDropped) / ((now - lastMs) / 1000);
 
-                Console.WriteLine("gen rate: {0}, write rate: {1}, chan drop rate: {2}, lag drop rate: {3}",
-                        genRate, writtenRate, chanDropRate, lagDropRate);
+                var tail = log.TailAddress;
+                var committedUntil = log.CommittedUntilAddress;
+                var flushedUntil = log.FlushedUntilAddress;
+
+                Console.WriteLine("gen rate: {0}; write rate: {1}; chan drop rate: {2}; lag drop rate: {3}; tail-commited: {4}; tail-flushed: {5}",
+                        genRate.ToString("N0"), writtenRate.ToString("N0"), chanDropRate, lagDropRate,
+                        (tail - committedUntil).ToString("N0"),
+                        (tail - flushedUntil).ToString("N0"));
 
                 lastMs = now;
                 lastWritten = written;
