@@ -55,24 +55,25 @@ namespace FasterLogSample
             var queryServer = new Thread(() => QueryServer());
             queryServer.Start();
 
-            var pointsSerialized = DataLoader.LoadSerializedSamplesWithTimestamp("serialized_samples");
+            var pointsSerialized = DataLoader.LoadSerializedSamplesWithTimestamp("/home/ubuntu/data/serialized_samples");
             // var pointsSerialized = DataLoader.SaveSerializedSamplesToFile("/home/fsolleza/data/telemetry-samples");
 
             (allSources, perfSources) = GetSourceIds(pointsSerialized);
             Console.WriteLine($"Perf source ids: {perfSources.Count}");
 
             // Create settings to write logs and commits at specified local path
+            // using var config = new FasterLogSettings("/home/ubuntu/efs/FasterLogSample", deleteDirOnDispose: false);
             using var config = new FasterLogSettings("./FasterLogSample", deleteDirOnDispose: false);
             config.MemorySize = 1L << 30;
             config.PageSize = 1L << 24;
-            config.AutoCommit = true;
+            // config.AutoCommit = true;
 
             // FasterLog will recover and resume if there is a previous commit found
             log = new FasterLog(config);
-            // WriteCompressed(pointsSerialized);
 
 
             new Thread(() => CommitThread()).Start();
+
             var monitor = new Thread(() => MonitorThread());
             var writer = new Thread(() => WriteReplay(pointsSerialized));
             monitor.Start();
@@ -81,7 +82,6 @@ namespace FasterLogSample
             monitor.Join();
             writer.Join();
             queryServer.Join();
-            Console.WriteLine("Exiting");
         }
 
         static void CommitThread()
@@ -89,10 +89,7 @@ namespace FasterLogSample
             while (true)
             {
                 Thread.Sleep(1000);
-                var s = Stopwatch.GetTimestamp();
                 log.Commit(true);
-                var e = Stopwatch.GetTimestamp();
-                // Console.WriteLine("Commit took {0}", e - s);
             }
         }
 
@@ -138,7 +135,6 @@ namespace FasterLogSample
                         var pointSpan = point.GetSpan();
                         if (sampleBatchOffset + pointSpan.Length < sampleBatch.Length)
                         {
-                            // Buffer.BlockCopy(point, 0, sampleBatch, sampleBatchOffset, point.Length);
                             pointSpan.CopyTo(new Span<byte>(sampleBatch, sampleBatchOffset, pointSpan.Length));
                             sampleBatchOffset += pointSpan.Length;
                             samplesBatched++;
@@ -209,14 +205,8 @@ namespace FasterLogSample
 
                 for (var i = start; i < end; i++)
                 {
-                    if (ch.TryWrite(pointsSerialized[i]))
-                    {
-                        generated++;
-                    }
-                    else
-                    {
-                        chDropped++;
-                    }
+		    while (!ch.TryWrite(pointsSerialized[i])) { }
+                    generated++;
                 }
                 idx = end;
                 Interlocked.Exchange(ref samplesGenerated, generated);
@@ -320,15 +310,8 @@ namespace FasterLogSample
 
                 for (var i = start; i < end; i++)
                 {
-                    if (ch.TryWrite(pointsSerialized[i]))
-                    {
-                        generated++;
-                    }
-                    else
-                    {
-                        chDropped++;
-                    }
-                    // pointsSerialized[i] = null; // make point more GC-able?
+		    while (!ch.TryWrite(pointsSerialized[i])) { }
+		    generated++;
                 }
                 idx = end;
                 Interlocked.Exchange(ref samplesGenerated, generated);
@@ -416,7 +399,7 @@ namespace FasterLogSample
             }
         }
 
-        static void WriteCompressed(List<(ulong, byte[])> pointsSerialized)
+        static void WriteCompressed(PointRef[] pointsSerialized)
         {
             double totalBytes = 0.0;
             double lastTotalBytes = 0;
@@ -442,10 +425,11 @@ namespace FasterLogSample
             {
                 foreach (var point in pointsSerialized)
                 {
-                    if (sampleBatchOffset + point.Item2.Length <= sampleBatch.Length)
+		    var pointSpan = point.GetSpan();
+                    if (sampleBatchOffset + pointSpan.Length <= sampleBatch.Length)
                     {
-                        Buffer.BlockCopy(point.Item2, 0, sampleBatch, sampleBatchOffset, point.Item2.Length);
-                        sampleBatchOffset += point.Item2.Length;
+			pointSpan.CopyTo(new Span<byte>(sampleBatch, sampleBatchOffset, pointSpan.Length));
+                        sampleBatchOffset += pointSpan.Length;
                         samplesWritten++;
                     }
                     else
@@ -677,7 +661,7 @@ namespace FasterLogSample
             try
             {
                 Int32 port = 13000;
-                IPAddress localAddr = IPAddress.Parse("127.0.0.1");
+                IPAddress localAddr = IPAddress.Parse("0.0.0.0");
 
                 server = new TcpListener(localAddr, port);
                 server.Start();
