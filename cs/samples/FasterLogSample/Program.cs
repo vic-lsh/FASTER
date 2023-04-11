@@ -142,8 +142,8 @@ namespace FasterLogSample
                         else
                         {
                             var encodedLength = LZ4Codec.Encode(
-                                sampleBatch, 0, sampleBatchOffset,
-                                compressBuf, 8, compressBuf.Length - 8);
+                                                                sampleBatch, 0, sampleBatchOffset,
+                                                                compressBuf, 8, compressBuf.Length - 8);
 
                             var prevAddrBytes = Serializer.UlongToBigEndianBytes(prevLogicalAddress);
                             Buffer.BlockCopy(prevAddrBytes, 0, compressBuf, 0, prevAddrBytes.Length);
@@ -205,7 +205,7 @@ namespace FasterLogSample
 
                 for (var i = start; i < end; i++)
                 {
-		    while (!ch.TryWrite(pointsSerialized[i])) { }
+                    while (!ch.TryWrite(pointsSerialized[i])) { }
                     generated++;
                 }
                 idx = end;
@@ -311,8 +311,8 @@ namespace FasterLogSample
 
                 for (var i = start; i < end; i++)
                 {
-		    while (!ch.TryWrite(pointsSerialized[i])) { }
-		    generated++;
+                    while (!ch.TryWrite(pointsSerialized[i])) { }
+                    generated++;
                 }
                 idx = end;
                 Interlocked.Exchange(ref samplesGenerated, generated);
@@ -352,7 +352,7 @@ namespace FasterLogSample
             var dropRate = (float)totalDropped / (float)pointsSerialized.Length;
 
             Console.WriteLine("DONE, dropped {0}, drop rate: {1}",
-                    (lagDropped + chDropped).ToString("N0"), dropRate);
+                              (lagDropped + chDropped).ToString("N0"), dropRate);
             ch.Complete();
             Interlocked.Exchange(ref completed, 1);
             //GC.EndNoGCRegion();
@@ -388,9 +388,9 @@ namespace FasterLogSample
                 var flushedUntil = log.FlushedUntilAddress;
 
                 Console.WriteLine("gen rate: {0}; write rate: {1}; chan drop rate: {2}; lag drop rate: {3}; tail-commited: {4}; tail-flushed: {5}",
-                        genRate.ToString("N0"), writtenRate.ToString("N0"), chanDropRate, lagDropRate,
-                        (tail - committedUntil).ToString("N0"),
-                        (tail - flushedUntil).ToString("N0"));
+                                  genRate.ToString("N0"), writtenRate.ToString("N0"), chanDropRate, lagDropRate,
+                                  (tail - committedUntil).ToString("N0"),
+                                  (tail - flushedUntil).ToString("N0"));
 
                 lastMs = now;
                 lastWritten = written;
@@ -426,10 +426,10 @@ namespace FasterLogSample
             {
                 foreach (var point in pointsSerialized)
                 {
-		    var pointSpan = point.GetSpan();
+                    var pointSpan = point.GetSpan();
                     if (sampleBatchOffset + pointSpan.Length <= sampleBatch.Length)
                     {
-			pointSpan.CopyTo(new Span<byte>(sampleBatch, sampleBatchOffset, pointSpan.Length));
+                        pointSpan.CopyTo(new Span<byte>(sampleBatch, sampleBatchOffset, pointSpan.Length));
                         sampleBatchOffset += pointSpan.Length;
                         samplesWritten++;
                     }
@@ -440,8 +440,8 @@ namespace FasterLogSample
                         cpStopWatch.Start();
                         var target = new byte[LZ4Codec.MaximumOutputSize(sampleBatch.Length) + 4];
                         var encodedLength = LZ4Codec.Encode(
-                            sampleBatch, 0, sampleBatch.Length,
-                            target, 4, target.Length - 4);
+                                                            sampleBatch, 0, sampleBatch.Length,
+                                                            target, 4, target.Length - 4);
                         compressMs += cpStopWatch.ElapsedMilliseconds;
 
                         BinaryPrimitives.WriteUInt32BigEndian(target.AsSpan<byte>(), (uint)encodedLength);
@@ -472,7 +472,7 @@ namespace FasterLogSample
                             var mbpsUncompressed = mbUncompressed / secs;
 
                             Console.WriteLine("In thread total mb written: {0}, sps: {1}, mbps: {2}, secs: {3}, mbps uncomp {4}, compress ms {5}, compcpy ms {6}",
-                                    mb, sps, mbps, secs, mbpsUncompressed, compressMs, compressCopyMs);
+                                              mb, sps, mbps, secs, mbpsUncompressed, compressMs, compressCopyMs);
                             lastMs = now;
                             lastTotalBytes = totalBytes;
                             lastUncompressedBytes = uncompressedBytes;
