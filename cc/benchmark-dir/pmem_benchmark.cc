@@ -34,8 +34,9 @@ enum class Op : uint8_t {
 
 enum class Workload {
   A_50_50 = 0,
-  RMW_100 = 1,
+  B_95_5 = 1,
   C_100 = 2,
+  F_50_RMW_50 = 5,
 };
 
 static constexpr uint64_t kRefreshInterval = 64;
@@ -578,12 +579,25 @@ inline Op ycsb_a_50_50(std::mt19937_64& rng) {
   }
 }
 
-inline Op ycsb_rmw_100(std::mt19937_64& rng) {
+inline Op ycsb_b_95_5(std::mt19937_64& rng) {
+  if(rng() % 100 < 95) {
+    return Op::Read;
+  } else {
+    return Op::Upsert;
+  }
   return Op::ReadModifyWrite;
 }
 
 inline Op ycsb_c_100(std::mt19937_64& rng) {
   return Op::Read;
+}
+
+inline Op ycsb_f_50_rmw_50(std::mt19937_64& rng) {
+  if(rng() % 100 < 50) {
+    return Op::Read;
+  } else {
+    return Op::ReadModifyWrite;
+  }
 }
 
 void SetThreadAffinity(size_t core) {
@@ -992,11 +1006,14 @@ void run(Workload workload, size_t num_load_threads, size_t num_run_threads) {
     case Workload::A_50_50:
       warmup_store<ycsb_a_50_50>(&store, kNumWarmupThreads);
       break;
-    case Workload::RMW_100:
-      warmup_store<ycsb_rmw_100>(&store, kNumWarmupThreads);
+    case Workload::B_95_5:
+      warmup_store<ycsb_b_95_5>(&store, kNumWarmupThreads);
       break;
     case Workload::C_100:
       warmup_store<ycsb_c_100>(&store, kNumWarmupThreads);
+      break;
+    case Workload::F_50_RMW_50:
+      warmup_store<ycsb_f_50_rmw_50>(&store, kNumWarmupThreads);
       break;
     default:
       printf("Unknown workload!\n");
@@ -1013,11 +1030,14 @@ void run(Workload workload, size_t num_load_threads, size_t num_run_threads) {
   case Workload::A_50_50:
     run_benchmark<ycsb_a_50_50>(&store, num_run_threads);
     break;
-  case Workload::RMW_100:
-    run_benchmark<ycsb_rmw_100>(&store, num_run_threads);
+  case Workload::B_95_5:
+    run_benchmark<ycsb_b_95_5>(&store, num_run_threads);
     break;
   case Workload::C_100:
     run_benchmark<ycsb_c_100>(&store, num_run_threads);
+    break;
+  case Workload::F_50_RMW_50:
+    run_benchmark<ycsb_f_50_rmw_50>(&store, num_run_threads);
     break;
   default:
     printf("Unknown workload!\n");
