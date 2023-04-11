@@ -267,14 +267,15 @@ namespace FasterLogSample
             //}
 
             long DELAY_NS = 1_000_000_000L * 30;
-            var baseTs = (ulong)(Stopwatch.GetTimestamp() + DELAY_NS);
+            long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 1_000_000;
+            var baseTs = (ulong)(now + DELAY_NS);
 
             RewriteTimestamps(pointsSerialized, baseTs);
-            if (Stopwatch.GetTimestamp() > (long)baseTs)
+            if (DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 1000000 > (long)baseTs)
             {
                 throw new Exception("Bad replay base timestamp: timestamp rewriting took longer than expected");
             }
-            while (Stopwatch.GetTimestamp() < (long)baseTs) { }
+            while (DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 1_000_000 < (long)baseTs) { }
 
             Console.WriteLine("WORkLOAD BEGINS");
             Interlocked.Exchange(ref dataReady, 1);
