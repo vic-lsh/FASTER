@@ -327,18 +327,22 @@ class PersistentMemoryMalloc {
   }
 
   ~PersistentMemoryMalloc() {
+#ifdef DUMP_ADDR
     FILE *fp = fopen("log_addr.txt", "w");
     FILE *phys_fp = fopen("log_phys_addr.txt", "w");
     int trans_fd = open("/proc/self/pagemap", O_RDONLY);
+#endif
     if(pages_) {
       for(uint32_t idx = 0; idx < buffer_size_; ++idx) {
         if(pages_[idx]) {
+#ifdef DUMP_ADDR
           fprintf(fp, "%ld\n", (uint64_t) pages_[idx]);
           uint64_t start_index = ((uint64_t) pages_[idx]) / 4096;
           uint64_t end_index = (((uint64_t) pages_[idx]) + kPageSize - 1) / 4096;
           for (uint64_t page_index = start_index; page_index <= end_index; ++page_index) {
             fprintf(phys_fp, "%ld\n", addr_translate(trans_fd, (void *) (4096 * page_index)));
           }
+#endif
 #if defined(USE_HEMEM) || defined(USE_OPT)
           munmap(pages_[idx], kPageSize);
 #else
@@ -348,9 +352,11 @@ class PersistentMemoryMalloc {
       }
       delete[] pages_;
     }
+#ifdef DUMP_ADDR
     fclose(fp);
     fclose(phys_fp);
     close(trans_fd);
+#endif
     if(page_status_) {
       delete[] page_status_;
     }

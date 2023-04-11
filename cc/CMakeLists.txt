@@ -10,6 +10,7 @@ project(FASTER)
 # add_compile_definitions(USE_THP)
 # add_compile_definitions(USE_OPT)
 # add_compile_definitions(USE_HEMEM)
+# add_compile_definitions(DUMP_ADDR)
 
 add_compile_definitions(VALUE_SIZE=1024)
 add_compile_definitions(OPT_PAGE_SIZE=2097152)

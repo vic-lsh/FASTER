@@ -34,6 +34,7 @@ class InternalHashTable {
 
   ~InternalHashTable() {
     if(buckets_) {
+#ifdef DUMP_ADDR
       int trans_fd = open("/proc/self/pagemap", O_RDONLY);
       FILE *output_fp = fopen("ht_phys_addr.txt", "w");
       uint64_t start_index = ((uint64_t) buckets_) / 4096;
@@ -43,8 +44,13 @@ class InternalHashTable {
       }
       fclose(output_fp);
       close(trans_fd);
-      // aligned_free(buckets_);
+#endif
+
+#if defined(USE_HEMEM) || defined(USE_OPT)
       munmap(buckets_, size_ * sizeof(HashBucket));
+#else
+      aligned_free(buckets_);
+#endif
     }
   }
 
