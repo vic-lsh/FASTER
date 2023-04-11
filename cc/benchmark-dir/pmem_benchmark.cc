@@ -271,7 +271,9 @@ class RmwContext : public IAsyncContext {
   Key key_;
   uint64_t incr_;
 };
+
 #else
+
 // Large value
 class GenLock {
   public:
@@ -637,8 +639,6 @@ uint64_t next_uniform(mt19937_64 &rand_eng, uniform_int_distribution<uint64_t> &
 
 template <Op(*FN)(std::mt19937_64&)>
 void thread_warmup_store(store_t* store, size_t thread_idx, uint64_t num_ops) {
-  SetThreadAffinity(thread_idx);
-
   mt19937_64 rand_eng{thread_idx + 0xBEEF};
 	uniform_real_distribution<double> uniform_real_dist(0, 1);
 	uniform_int_distribution<uint64_t> uniform_int_dist(0, num_records_ - 1);
@@ -723,8 +723,6 @@ void thread_setup_store(store_t* store, size_t thread_idx, uint64_t start_idx, u
   auto callback = [](IAsyncContext* ctxt, Status result) {
     assert(result == Status::Ok);
   };
-
-  SetThreadAffinity(thread_idx);
   Guid guid = store->StartSession();
 
   uint64_t value = 42;  // arbitrary choice
@@ -855,8 +853,6 @@ void setup_store(store_t* store, size_t num_threads) {
 
 template <Op(*FN)(std::mt19937_64&)>
 void thread_run_benchmark(store_t* store, size_t thread_idx) {
-  SetThreadAffinity(thread_idx);
-
   mt19937_64 rand_eng{thread_idx};
 	uniform_real_distribution<double> uniform_real_dist(0, 1);
 	uniform_int_distribution<uint64_t> uniform_int_dist(0, num_records_ - 1);
