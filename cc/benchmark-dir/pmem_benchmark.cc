@@ -866,7 +866,7 @@ void setup_store(store_t* store, size_t num_threads) {
 }
 
 template <Op(*FN)(std::mt19937_64&)>
-void thread_run_benchmark(store_t* store, size_t thread_idx) {
+void thread_run_benchmark(store_t* store, size_t thread_idx, uint64_t num_ops) {
   mt19937_64 rand_eng{thread_idx};
 	uniform_real_distribution<double> uniform_real_dist(0, 1);
 	uniform_int_distribution<uint64_t> uniform_int_dist(0, num_records_ - 1);
@@ -879,15 +879,13 @@ void thread_run_benchmark(store_t* store, size_t thread_idx) {
 
   Guid guid = store->StartSession();
 
-  uint64_t idx = 0;
-  while (total_ops_done_.fetch_add(1) < num_ops_) {
+  for (uint64_t idx = 0; idx < num_ops; ++idx) {
     if(idx % kRefreshInterval == 0) {
       store->Refresh();
       if(idx % kCompletePendingInterval == 0) {
         store->CompletePending(false);
       }
     }
-    idx++;
     uint64_t key;
     if (zipfian_constant_ > 0)
       key = next_zipfian(rand_eng, uniform_real_dist);
@@ -961,7 +959,7 @@ void run_benchmark(store_t* store, size_t num_threads) {
   total_writes_done_ = 0;
   std::deque<std::thread> threads;
   for(size_t thread_idx = 0; thread_idx < num_threads; ++thread_idx) {
-    threads.emplace_back(&thread_run_benchmark<FN>, store, thread_idx);
+    threads.emplace_back(&thread_run_benchmark<FN>, store, thread_idx, num_ops_ / num_threads);
   }
 
   for(auto& thread : threads) {
