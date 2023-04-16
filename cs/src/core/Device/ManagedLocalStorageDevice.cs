@@ -187,25 +187,24 @@ namespace FASTER.core
                 return;
             }
 
-            _ = Task.Run(async () =>
+            if (!gotHandle)
             {
-                if (!gotHandle)
+                try
                 {
-                    try
-                    {
-                        logReadHandle = await streampool.GetAsync().ConfigureAwait(false);
-                        logReadHandle.Seek((long)sourceAddress, SeekOrigin.Begin);
+                    // logReadHandle = await streampool.GetAsync().ConfigureAwait(false);
+                    logReadHandle = streampool.Get();
+                    logReadHandle.Seek((long)sourceAddress, SeekOrigin.Begin);
 #if NETSTANDARD2_1 || NET
-                        unsafe
-                        {
-                            umm = new UnmanagedMemoryManager<byte>((byte*)destinationAddress, (int)readLength);
-                        }
+                    unsafe
+                    {
+                        umm = new UnmanagedMemoryManager<byte>((byte*)destinationAddress, (int)readLength);
+                    }
 
-                        // FileStream.ReadAsync is not thread-safe hence need a lock here
-                        lock (this)
-                        {
-                            readTask = logReadHandle.ReadAsync(umm.Memory).AsTask();
-                        }
+                    // FileStream.ReadAsync is not thread-safe hence need a lock here
+                    lock (this)
+                    {
+                        readTask = logReadHandle.ReadAsync(umm.Memory).AsTask();
+                    }
 #else
                         memory = pool.Get((int)readLength);
                         // FileStream.ReadAsync is not thread-safe hence need a lock here
@@ -214,26 +213,27 @@ namespace FASTER.core
                             readTask = logReadHandle.ReadAsync(memory.buffer, 0, (int)readLength);
                         }
 #endif
-                    }
-                    catch
-                    {
-                        Interlocked.Decrement(ref numPending);
+                }
+                catch
+                {
+                    Interlocked.Decrement(ref numPending);
 
-                        // Perform pool returns and disposals
+                    // Perform pool returns and disposals
 #if !(NETSTANDARD2_1 || NET)
                         memory?.Return();
 #endif
-                        if (logReadHandle != null) streampool?.Return(logReadHandle);
+                    if (logReadHandle != null) streampool?.Return(logReadHandle);
 
-                        // Issue user callback
-                        callback(uint.MaxValue, 0, context);
-                        return;
-                    }
+                    // Issue user callback
+                    callback(uint.MaxValue, 0, context);
+                    return;
                 }
+            }
 
-                try
-                {
-                    numBytes = await readTask.ConfigureAwait(false);
+            try
+            {
+                // numBytes = await readTask.ConfigureAwait(false);
+                numBytes = readTask.GetAwaiter().GetResult();
 
 #if !(NETSTANDARD2_1 || NET)
                     unsafe
@@ -242,30 +242,29 @@ namespace FASTER.core
                             Buffer.MemoryCopy(source, (void*)destinationAddress, numBytes, numBytes);
                     }
 #endif
-                }
-                catch (Exception ex)
-                {
-                    if (ex.InnerException != null && ex.InnerException is IOException ioex)
-                        errorCode = (uint)(ioex.HResult & 0x0000FFFF);
-                    else
-                        errorCode = uint.MaxValue;
-                    numBytes = 0;
-                }
-                finally
-                {
-                    Interlocked.Decrement(ref numPending);
+            }
+            catch (Exception ex)
+            {
+                if (ex.InnerException != null && ex.InnerException is IOException ioex)
+                    errorCode = (uint)(ioex.HResult & 0x0000FFFF);
+                else
+                    errorCode = uint.MaxValue;
+                numBytes = 0;
+            }
+            finally
+            {
+                Interlocked.Decrement(ref numPending);
 
-                    // Perform pool returns and disposals
+                // Perform pool returns and disposals
 #if !(NETSTANDARD2_1 || NET)
                     memory?.Return();
 #endif
-                    // Sequentialize all reads from same handle
-                    streampool?.Return(logReadHandle);
+                // Sequentialize all reads from same handle
+                streampool?.Return(logReadHandle);
 
-                    // Issue user callback
-                    callback(errorCode, (uint)numBytes, context);
-                }
-            });
+                // Issue user callback
+                callback(errorCode, (uint)numBytes, context);
+            }
         }
 
         /// <summary>
