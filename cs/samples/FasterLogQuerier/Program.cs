@@ -26,9 +26,9 @@ namespace FasterLogQuerier
     public class Program
     {
 
-        static readonly string SERVER = "127.0.0.1";
+        static readonly string SERVER = "172.31.21.70";
         static readonly int PORT = 13000;
-        static readonly int NUM_QUERIERS = 10;
+        static readonly int NUM_QUERIERS = 2;
 
         static void Main()
         {
@@ -37,21 +37,21 @@ namespace FasterLogQuerier
 
             var id = 0;
 
-            var firstClient = new QueryClient(id++, conn, usePerfSources: false);
-            // Thread.Sleep(120_000);
-            Thread.Sleep(20_000);
-            Console.WriteLine("low rate client begins query");
-            new Thread(() =>
-            {
-                var sw = new Stopwatch();
-                sw.Start();
-                while (sw.ElapsedMilliseconds < 60_000)
-                {
-                    firstClient.DoQuery();
-                }
-            }).Start();
+            // var firstClient = new QueryClient(id++, conn, usePerfSources: false);
+            // // Thread.Sleep(120_000);
+            // Thread.Sleep(20_000);
+            // Console.WriteLine("low rate client begins query");
+            // new Thread(() =>
+            // {
+            //     var sw = new Stopwatch();
+            //     sw.Start();
+            //     while (sw.ElapsedMilliseconds < 60_000)
+            //     {
+            //         firstClient.DoQuery();
+            //     }
+            // }).Start();
 
-            Thread.Sleep(60_000);
+            Thread.Sleep(123_000);
             Console.WriteLine("perf clients begin query");
 
             var thrs = new List<Thread>();
