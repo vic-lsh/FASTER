@@ -57,6 +57,8 @@ uint64_t num_warmup_ops_;
 #ifdef USE_OPT
 uint64_t dram_size_;  // GB
 #endif
+long max_run_time;
+volatile bool running = true;
 
 struct {
   double zetan;
@@ -879,7 +881,7 @@ void thread_run_benchmark(store_t* store, size_t thread_idx, uint64_t num_ops) {
 
   Guid guid = store->StartSession();
 
-  for (uint64_t idx = 0; idx < num_ops; ++idx) {
+  for (uint64_t idx = 0; idx < num_ops && running; ++idx) {
     if(idx % kRefreshInterval == 0) {
       store->Refresh();
       if(idx % kCompletePendingInterval == 0) {
@@ -960,6 +962,12 @@ void run_benchmark(store_t* store, size_t num_threads) {
   std::deque<std::thread> threads;
   for(size_t thread_idx = 0; thread_idx < num_threads; ++thread_idx) {
     threads.emplace_back(&thread_run_benchmark<FN>, store, thread_idx, num_ops_ / num_threads);
+  }
+
+  if (max_run_time > 0) {
+    std::this_thread::sleep_for(std::chrono::seconds(max_run_time));
+    printf("Reached maximum run time of %ld seconds, shutting down...\n", max_run_time);
+    running = false;
   }
 
   for(auto& thread : threads) {
@@ -1044,12 +1052,12 @@ void run(Workload workload, size_t num_load_threads, size_t num_run_threads) {
 }
 
 int main(int argc, char* argv[]) {
-  size_t kNumArgs = 7;
+  size_t kNumArgs = 8;
 #ifdef USE_OPT
   kNumArgs++;
 #endif
   if(argc != kNumArgs + 1) {
-    printf("Usage: %s <workload> <# load threads> <# run threads> <zipfian constant> <# records> <# ops> <# warmup ops>", argv[0]);
+    printf("Usage: %s <workload> <# load threads> <# run threads> <zipfian constant> <# records> <# ops> <# warmup ops> <max run time>", argv[0]);
 #ifdef USE_OPT
     printf(" <DRAM Size (GB)>");
 #endif
@@ -1064,8 +1072,9 @@ int main(int argc, char* argv[]) {
   num_records_ = std::atol(argv[5]);
   num_ops_ = std::atol(argv[6]);
   num_warmup_ops_ = std::atol(argv[7]);
+  max_run_time = std::atol(argv[8]);
 #ifdef USE_OPT
-  dram_size_ = std::atol(argv[8]);
+  dram_size_ = std::atol(argv[9]);
 #endif
 
   run(workload, num_load_threads, num_run_threads);
