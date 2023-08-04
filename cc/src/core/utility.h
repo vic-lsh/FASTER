@@ -152,6 +152,7 @@ void numa_remap(void *addr, uint64_t size, uint64_t node) {
   BUG_ON(((uint64_t) addr) % OPT_PAGE_SIZE != 0);
   BUG_ON(size % OPT_PAGE_SIZE != 0);
 
+#ifdef USE_THP
   // Copy data into a tmp buffer
   uint8_t *tmp_buf = (uint8_t *) aligned_alloc(OPT_PAGE_SIZE, size);
   memcpy(tmp_buf, addr, size);
@@ -167,15 +168,21 @@ void numa_remap(void *addr, uint64_t size, uint64_t node) {
   // Bind to new NUMA node
   numa_bind(addr, size, node);
 
-#ifdef OPT_HUGE_PAGE
   // Re-madvise THP
   huge_madvise(addr, size);
-#endif
 
   // Copy data into the new pages
   memcpy(addr, tmp_buf, size);
 
   aligned_free(tmp_buf);
+#else
+  int mp_node = (int) node;
+  int mp_status = 0;
+
+  long ret = move_pages(0, 1, &addr, &mp_node, &mp_status, MPOL_MF_MOVE);
+  BUG_ON(ret != 0);
+  BUG_ON(mp_status != node);
+#endif
 }
 
 }
