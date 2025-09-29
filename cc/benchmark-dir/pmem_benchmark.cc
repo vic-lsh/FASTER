@@ -11,6 +11,8 @@
 #include <string>
 #include <numeric>
 #include <algorithm>
+#include <condition_variable>
+#include <mutex>
 
 #include "file.h"
 
@@ -41,6 +43,7 @@ enum class Workload {
 
 static constexpr uint64_t kRefreshInterval = 64;
 static constexpr uint64_t kCompletePendingInterval = 1600;
+static constexpr std::chrono::seconds kProgressReportInterval{5};
 
 static_assert(kCompletePendingInterval % kRefreshInterval == 0,
               "kCompletePendingInterval % kRefreshInterval != 0");
@@ -940,6 +943,7 @@ void thread_run_benchmark(store_t* store, size_t thread_idx, uint64_t num_ops) {
       }
       break;
     }
+    total_ops_done_.fetch_add(1, std::memory_order_relaxed);
   }
 
   store->CompletePending(true);
@@ -959,9 +963,35 @@ void run_benchmark(store_t* store, size_t num_threads) {
   total_duration_ = 0;
   total_reads_done_ = 0;
   total_writes_done_ = 0;
+  total_ops_done_ = 0;
+  running = true;
   std::deque<std::thread> threads;
+  std::mutex progress_mutex;
+  std::condition_variable progress_cv;
+  bool progress_stop = false;
+
+  printf("Running benchmark using %" PRIu64 " threads...\n", num_threads);
   for(size_t thread_idx = 0; thread_idx < num_threads; ++thread_idx) {
     threads.emplace_back(&thread_run_benchmark<FN>, store, thread_idx, num_ops_ / num_threads);
+  }
+
+  std::thread progress_thread;
+  if(num_threads > 0) {
+    progress_thread = std::thread([&]() {
+      std::unique_lock<std::mutex> lock(progress_mutex);
+      uint64_t ops_prev = 0;
+      while(true) {
+        if(progress_cv.wait_for(lock, kProgressReportInterval, [&]() { return progress_stop; })) {
+          break;
+        }
+        lock.unlock();
+        uint64_t ops = total_ops_done_.load(std::memory_order_relaxed);
+        printf("Progress: %" PRIu64 " ops completed,\t +%" PRIu64 " ops\n", ops, ops-ops_prev);
+        ops_prev = ops;
+        fflush(stdout);
+        lock.lock();
+      }
+    });
   }
 
   if (max_run_time > 0) {
@@ -972,6 +1002,15 @@ void run_benchmark(store_t* store, size_t num_threads) {
 
   for(auto& thread : threads) {
     thread.join();
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(progress_mutex);
+    progress_stop = true;
+  }
+  progress_cv.notify_all();
+  if(progress_thread.joinable()) {
+    progress_thread.join();
   }
 
   printf("Finished benchmark: %.2f ops/second/thread\n",
