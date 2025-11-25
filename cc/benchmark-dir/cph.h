@@ -1,0 +1,1 @@
+#define CHURNS_PER_HOUR (720000)

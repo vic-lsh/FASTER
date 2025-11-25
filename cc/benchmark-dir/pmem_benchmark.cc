@@ -12,6 +12,8 @@
 #include <numeric>
 #include <algorithm>
 
+#include "aligned_atomic.hpp"
+
 #include "file.h"
 
 #include "core/auto_ptr.h"
@@ -609,7 +611,14 @@ void SetThreadAffinity(size_t core) {
   ::sched_setaffinity(0, sizeof(mask), &mask);
 }
 
+atomic<uint64_t> *ranks;
+
 uint64_t fnv1_64_hash(uint64_t value) {
+    return ranks[value];
+}
+
+/*
+uint64_t fnv1_64_hash_real(uint64_t value) {
   uint64_t hash = 14695981039346656037ul;
   uint8_t *p = (uint8_t *) &value;
   for (uint64_t i = 0; i < sizeof(uint64_t); ++i, ++p) {
@@ -618,6 +627,8 @@ uint64_t fnv1_64_hash(uint64_t value) {
   }
   return hash;
 }
+*/
+
 
 void init_zipfian_ctxt() {
   zipfian_ctxt_.zetan = 0;
@@ -632,8 +643,24 @@ void init_zipfian_ctxt() {
   zipfian_ctxt_.alpha = 1.0 / (1.0 - zipfian_ctxt_.theta);
   zipfian_ctxt_.eta = (1 - pow(2.0 / (double) num_records_, 1 - zipfian_ctxt_.theta))
     / (1 - (zipfian_ctxt_.zeta2theta / zipfian_ctxt_.zetan));
+
+
+  // init ranks
+  ranks = new std::atomic<uint64_t>[num_records_];
+  std::vector<uint64_t> ranks_init;
+  for (uint64_t i = 0; i < num_records_; i++) {
+      ranks_init.push_back(i);
+  }
+  std::mt19937 g{123};
+  std::shuffle(ranks_init.begin(), ranks_init.end(), g);
+  for (uint64_t i = 0; i < num_records_; i++) {
+    //ranks[i] = fnv1_64_hash_real(i) % num_records_;
+    ranks[i] = ranks_init[i];
+  }
+
 }
 
+//uint64_t next_zipfian(mt19937_64 &rand_eng, uniform_real_distribution<double> &dist, uint64_t phase) {
 uint64_t next_zipfian(mt19937_64 &rand_eng, uniform_real_distribution<double> &dist) {
   double u = dist(rand_eng);
   double uz = u * zipfian_ctxt_.zetan;
@@ -645,6 +672,7 @@ uint64_t next_zipfian(mt19937_64 &rand_eng, uniform_real_distribution<double> &d
   } else {
     ret = (uint64_t) ((double)num_records_ * pow(zipfian_ctxt_.eta * u - zipfian_ctxt_.eta + 1, zipfian_ctxt_.alpha));
   }
+  //ret = fnv1_64_hash(ret + num_records_ * phase) % num_records_;
   ret = fnv1_64_hash(ret) % num_records_;
   return ret;
 }
@@ -670,6 +698,7 @@ void thread_warmup_store(store_t* store, size_t thread_idx, uint64_t num_ops) {
     }
     uint64_t key;
     if (zipfian_constant_ > 0)
+      //key = next_zipfian(rand_eng, uniform_real_dist, 0);
       key = next_zipfian(rand_eng, uniform_real_dist);
     else
       key = next_uniform(rand_eng, uniform_int_dist);
@@ -867,11 +896,20 @@ void setup_store(store_t* store, size_t num_threads) {
 #endif
 }
 
+aligned_atomic<uint64_t> counts[1024];
+aligned_atomic<bool> do_zipfian[1024];
+aligned_atomic<uint64_t> zipfian_phase[1024];
+aligned_atomic<int> phase_idx[1024];
+
 template <Op(*FN)(std::mt19937_64&)>
 void thread_run_benchmark(store_t* store, size_t thread_idx, uint64_t num_ops) {
   mt19937_64 rand_eng{thread_idx};
 	uniform_real_distribution<double> uniform_real_dist(0, 1);
 	uniform_int_distribution<uint64_t> uniform_int_dist(0, num_records_ - 1);
+	uniform_int_distribution<uint64_t> uniform_int_dist1(0, num_records_/4 - 1);
+	uniform_int_distribution<uint64_t> uniform_int_dist2(num_records_/4, 2*num_records_/4 - 1);
+	uniform_int_distribution<uint64_t> uniform_int_dist3(2*num_records_/4, 3*num_records_/4 - 1);
+	uniform_int_distribution<uint64_t> uniform_int_dist4(3*num_records_/4, num_records_ - 1);
 
   auto start_time = std::chrono::high_resolution_clock::now();
 
@@ -889,10 +927,22 @@ void thread_run_benchmark(store_t* store, size_t thread_idx, uint64_t num_ops) {
       }
     }
     uint64_t key;
-    if (zipfian_constant_ > 0)
+    if (zipfian_constant_ > 0 && do_zipfian[thread_idx])
+      //key = next_zipfian(rand_eng, uniform_real_dist, zipfian_phase[thread_idx]);
       key = next_zipfian(rand_eng, uniform_real_dist);
     else
       key = next_uniform(rand_eng, uniform_int_dist);
+    //if (phase_idx[thread_idx] == 0) key = next_uniform(rand_eng, uniform_int_dist1);
+    //if (phase_idx[thread_idx] == 1) key = next_uniform(rand_eng, uniform_int_dist2);
+    //if (phase_idx[thread_idx] == 2) key = next_uniform(rand_eng, uniform_int_dist3);
+    //if (phase_idx[thread_idx] == 3) key = next_uniform(rand_eng, uniform_int_dist4);
+    /*
+    if (uniform_real_dist(rand_eng) < 0.9) {
+        key = fnv1_64_hash(phase_idx[thread_idx]) % num_records_;
+    } else {
+        key = next_uniform(rand_eng, uniform_int_dist);
+    }
+    */
 
     switch(FN(rand_eng)) {
     case Op::Insert:
@@ -907,6 +957,7 @@ void thread_run_benchmark(store_t* store, size_t thread_idx, uint64_t num_ops) {
 #endif
       Status result = store->Upsert(context, callback, 1);
       ++writes_done;
+      counts[thread_idx]++;
       break;
     }
     case Op::Scan:
@@ -922,6 +973,7 @@ void thread_run_benchmark(store_t* store, size_t thread_idx, uint64_t num_ops) {
 
       Status result = store->Read(context, callback, 1);
       ++reads_done;
+      counts[thread_idx]++;
       break;
     }
     case Op::ReadModifyWrite:
@@ -937,6 +989,7 @@ void thread_run_benchmark(store_t* store, size_t thread_idx, uint64_t num_ops) {
       Status result = store->Rmw(context, callback, 1);
       if(result == Status::Ok) {
         ++writes_done;
+        counts[thread_idx]++;
       }
       break;
     }
@@ -954,20 +1007,84 @@ void thread_run_benchmark(store_t* store, size_t thread_idx, uint64_t num_ops) {
          thread_idx, reads_done, writes_done, (double)duration.count() / kNanosPerSecond);
 }
 
+void do_churn(mt19937_64 &rand_eng, uniform_int_distribution<size_t> &dist) {
+    size_t idx1 = dist(rand_eng);
+    size_t idx2 = dist(rand_eng);
+    // non atomic swap, small race condition here lol
+    uint64_t val1 = ranks[idx1];
+    uint64_t val2 = ranks[idx2];
+    ranks[idx1] = val2;
+    ranks[idx2] = val1;
+}
+
 template <Op(*FN)(std::mt19937_64&)>
 void run_benchmark(store_t* store, size_t num_threads) {
   total_duration_ = 0;
   total_reads_done_ = 0;
   total_writes_done_ = 0;
   std::deque<std::thread> threads;
+  int num_phases = 6;
+  //int num_phases = 4;
+  //int phases[num_phases] = {0, -1, 0, 1, -1, 2};
+  int phases[num_phases] = {0,1,2,3,4,5};
+  int current_phase_idx = 0;
   for(size_t thread_idx = 0; thread_idx < num_threads; ++thread_idx) {
+      do_zipfian[thread_idx] = phases[current_phase_idx] >= 0;
+      zipfian_phase[thread_idx] = phases[current_phase_idx];
+      phase_idx[thread_idx] = current_phase_idx;
     threads.emplace_back(&thread_run_benchmark<FN>, store, thread_idx, num_ops_ / num_threads);
   }
 
+  auto start_time = std::chrono::system_clock::now();
+  //auto end_time = start_time + std::chrono::seconds(max_run_time);
+  auto max_duration = std::chrono::seconds(max_run_time);
+  auto next_phase_change = std::chrono::seconds(max_run_time * (current_phase_idx+1) / num_phases);
+  //uint64_t churn_per_hour = 1000000000;
+#include "cph.h"
+  uint64_t churn_per_hour = CHURNS_PER_HOUR;
+  uint64_t churn_per_sec = churn_per_hour / 3600;
+  uint64_t churn_per_sec_real = churn_per_sec == 0 ? 1 : churn_per_sec;
+  uint64_t churn_every = churn_per_sec == 0 ? 3600 / churn_per_hour : 1;
+  printf("Churn: %ld every %ld seconds\n", churn_per_sec_real, churn_every);
+  uint64_t current_churn_idx = 0;
+  uint64_t num_churn_events = max_run_time / churn_every;
+  auto next_churn = std::chrono::seconds(max_run_time * (current_churn_idx+1) / num_churn_events);
+  mt19937_64 rand_eng{12345678};
+  uniform_int_distribution<size_t> uniform_int_dist(0, num_records_ - 1);
   if (max_run_time > 0) {
-    std::this_thread::sleep_for(std::chrono::seconds(max_run_time));
-    printf("Reached maximum run time of %ld seconds, shutting down...\n", max_run_time);
-    running = false;
+    while (1) {
+        //std::this_thread::sleep_for(std::chrono::seconds(max_run_time));
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+        auto cur_time = std::chrono::system_clock::now();
+        auto elapsed = cur_time - start_time;
+        if (elapsed >= max_duration) {
+            printf("Reached maximum run time of %ld seconds, shutting down...\n", max_run_time);
+            running = false;
+            break;
+        } else {
+            uint64_t tot_cnt = 0;
+            for (size_t i = 0; i < num_threads; i++) tot_cnt += counts[i];
+            auto elapsed_us = std::chrono::duration_cast<std::chrono::microseconds>(elapsed);
+            printf("At time %f, total count %ld, phase[%d]=%d\n", elapsed_us.count()/1000000., tot_cnt, current_phase_idx, phases[current_phase_idx]);
+            //std::cout << "At time " << std::put_time(&bt, "%H:%M:%S") << "." << std::setfill('0') << std::setw(3) << ms.count() << std::endl;
+            if (elapsed >= next_phase_change) {
+                current_phase_idx++;
+                next_phase_change = std::chrono::seconds(max_run_time * (current_phase_idx+1) / num_phases);
+                for (size_t i = 0; i < num_threads; i++) {
+                    do_zipfian[i] = phases[current_phase_idx] >= 0;
+                    zipfian_phase[i] = phases[current_phase_idx];
+                    phase_idx[i] = current_phase_idx;
+                }
+            }
+            if (elapsed >= next_churn) {
+                current_churn_idx++;
+                next_churn = std::chrono::seconds(max_run_time * (current_churn_idx+1) / num_churn_events);
+                for (size_t _i = 0; _i < churn_per_sec_real; _i++) {
+                    do_churn(rand_eng, uniform_int_dist);
+                }
+            }
+        }
+    }
   }
 
   for(auto& thread : threads) {
@@ -1003,8 +1120,24 @@ void run(Workload workload, size_t num_load_threads, size_t num_run_threads) {
   store.WarmUp();
 
   printf("Configuring distribution...\n");
-  if (zipfian_constant_ > 0)
+  if (zipfian_constant_ > 0) {
     init_zipfian_ctxt();
+    printf("Zipfian data:\n");
+    /*
+struct {
+  double zetan;
+  double theta;
+  double zeta2theta;
+  double alpha;
+  double eta;
+} zipfian_ctxt_;
+*/
+    printf("zetan: %f\n", zipfian_ctxt_.zetan);
+    printf("theta: %f\n", zipfian_ctxt_.theta);
+    printf("zeta2theta: %f\n", zipfian_ctxt_.zeta2theta);
+    printf("alpha: %f\n", zipfian_ctxt_.alpha);
+    printf("eta: %f\n", zipfian_ctxt_.eta);
+  }
 
   printf("Warming up the store...\n");
   if (num_warmup_ops_ > 0) {
@@ -1031,6 +1164,7 @@ void run(Workload workload, size_t num_load_threads, size_t num_run_threads) {
   printf("Warmup time: %.2f seconds.\n", (double) warmup_duration.count() / kNanosPerSecond);
 
   printf("Running benchmark on %" PRIu64 " threads...\n", num_run_threads);
+  printf("Value size in uint64_ts: %d\n", VALUE_NUM_UINT64);
   fflush(stdout);
   switch(workload) {
   case Workload::A_50_50:
