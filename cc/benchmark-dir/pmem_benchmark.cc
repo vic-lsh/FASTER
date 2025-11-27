@@ -1048,6 +1048,7 @@ void run_benchmark(store_t* store, size_t num_threads) {
   printf("Churn: %ld every %ld seconds\n", churn_per_sec_real, churn_every);
   uint64_t current_churn_idx = 0;
   uint64_t num_churn_events = max_run_time / churn_every;
+  if (num_churn_events == 0) num_churn_events = 1;
   auto next_churn = std::chrono::seconds(max_run_time * (current_churn_idx+1) / num_churn_events);
   mt19937_64 rand_eng{12345678};
   uniform_int_distribution<size_t> uniform_int_dist(0, num_records_ - 1);
