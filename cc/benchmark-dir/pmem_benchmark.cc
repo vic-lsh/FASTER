@@ -661,6 +661,21 @@ void init_zipfian_ctxt() {
 }
 
 //uint64_t next_zipfian(mt19937_64 &rand_eng, uniform_real_distribution<double> &dist, uint64_t phase) {
+uint64_t next_8020(mt19937_64 &rand_eng, uniform_real_distribution<double> &dist) {
+    double u = dist(rand_eng);
+    if (u < 0.8) {
+        // access the hot set
+        double u_to_1 = u / 0.8;
+        double u_to_set = u_to_1 * (num_records_ * 0.2);
+        return ranks[(uint64_t)u_to_set];
+    } else {
+        // access the cold set
+        double u_to_1 = (u - 0.8) / 0.2;
+        double u_to_set = u_to_1 * (num_records_ * 0.8) + num_records_ * 0.2;
+        return ranks[(uint64_t)u_to_set];
+    }
+}
+
 uint64_t next_zipfian(mt19937_64 &rand_eng, uniform_real_distribution<double> &dist) {
   double u = dist(rand_eng);
   double uz = u * zipfian_ctxt_.zetan;
@@ -929,7 +944,11 @@ void thread_run_benchmark(store_t* store, size_t thread_idx, uint64_t num_ops) {
     uint64_t key;
     if (zipfian_constant_ > 0 && do_zipfian[thread_idx])
       //key = next_zipfian(rand_eng, uniform_real_dist, zipfian_phase[thread_idx]);
-      key = next_zipfian(rand_eng, uniform_real_dist);
+      if (zipfian_phase[thread_idx] == 0) {
+          key = next_zipfian(rand_eng, uniform_real_dist);
+      } else {
+          key = next_8020(rand_eng, uniform_real_dist);
+      }
     else
       key = next_uniform(rand_eng, uniform_int_dist);
     //if (phase_idx[thread_idx] == 0) key = next_uniform(rand_eng, uniform_int_dist1);
@@ -1023,10 +1042,11 @@ void run_benchmark(store_t* store, size_t num_threads) {
   total_reads_done_ = 0;
   total_writes_done_ = 0;
   std::deque<std::thread> threads;
-  int num_phases = 6;
+  int num_phases = 1;
   //int num_phases = 4;
   //int phases[num_phases] = {0, -1, 0, 1, -1, 2};
-  int phases[num_phases] = {0,1,2,3,4,5};
+  //int phases[num_phases] = {0,1,2,3,4,5};
+  int phases[num_phases] = {0};
   int current_phase_idx = 0;
   for(size_t thread_idx = 0; thread_idx < num_threads; ++thread_idx) {
       do_zipfian[thread_idx] = phases[current_phase_idx] >= 0;
@@ -1042,21 +1062,31 @@ void run_benchmark(store_t* store, size_t num_threads) {
   //uint64_t churn_per_hour = 1000000000;
 #include "cph.h"
   uint64_t churn_per_hour = CHURNS_PER_HOUR;
-  uint64_t churn_per_sec = churn_per_hour / 3600;
-  uint64_t churn_per_sec_real = churn_per_sec == 0 ? 1 : churn_per_sec;
-  uint64_t churn_every = churn_per_sec == 0 ? 3600 / churn_per_hour : 1;
-  printf("Churn: %ld every %ld seconds\n", churn_per_sec_real, churn_every);
-  uint64_t current_churn_idx = 0;
-  uint64_t num_churn_events = max_run_time / churn_every;
-  if (num_churn_events == 0) num_churn_events = 1;
-  auto next_churn = std::chrono::seconds(max_run_time * (current_churn_idx+1) / num_churn_events);
+  //uint64_t churn_per_sec = churn_per_hour / 3600;
+  //uint64_t churn_per_sec_real = churn_per_sec == 0 ? 1 : churn_per_sec;
+  //uint64_t churn_every = churn_per_sec == 0 ? 3600 / churn_per_hour : 1;
+  //printf("Churn: %ld every %ld seconds\n", churn_per_sec_real, churn_every);
+  //uint64_t current_churn_idx = 0;
+  //uint64_t num_churn_events = max_run_time / churn_every;
+  //if (num_churn_events == 0) num_churn_events = 1;
+  //auto next_churn = std::chrono::seconds(max_run_time * (current_churn_idx+1) / num_churn_events);
+#ifdef NDEBUG
+  printf("Running in Release mode\n");
+#else
+  printf("Running in Debug mode\n");
+#endif
   mt19937_64 rand_eng{12345678};
   uniform_int_distribution<size_t> uniform_int_dist(0, num_records_ - 1);
+  uint64_t churn_last = 0;
+  auto target_epoch_time = std::chrono::seconds(1);
+  auto churn_every = 50; // epochs
+  uint64_t churn_ctr = 0;
+  int64_t sleep_debt = 0;
   if (max_run_time > 0) {
     while (1) {
         //std::this_thread::sleep_for(std::chrono::seconds(max_run_time));
-        std::this_thread::sleep_for(std::chrono::seconds(1));
         auto cur_time = std::chrono::system_clock::now();
+
         auto elapsed = cur_time - start_time;
         if (elapsed >= max_duration) {
             printf("Reached maximum run time of %ld seconds, shutting down...\n", max_run_time);
@@ -1068,6 +1098,7 @@ void run_benchmark(store_t* store, size_t num_threads) {
             auto elapsed_us = std::chrono::duration_cast<std::chrono::microseconds>(elapsed);
             printf("At time %f, total count %ld, phase[%d]=%d\n", elapsed_us.count()/1000000., tot_cnt, current_phase_idx, phases[current_phase_idx]);
             //std::cout << "At time " << std::put_time(&bt, "%H:%M:%S") << "." << std::setfill('0') << std::setw(3) << ms.count() << std::endl;
+            /*
             if (elapsed >= next_phase_change) {
                 current_phase_idx++;
                 next_phase_change = std::chrono::seconds(max_run_time * (current_phase_idx+1) / num_phases);
@@ -1077,14 +1108,65 @@ void run_benchmark(store_t* store, size_t num_threads) {
                     phase_idx[i] = current_phase_idx;
                 }
             }
+            */
+            /*
             if (elapsed >= next_churn) {
                 current_churn_idx++;
                 next_churn = std::chrono::seconds(max_run_time * (current_churn_idx+1) / num_churn_events);
+                printf("Churning: %lu\n", churn_per_sec_real);
                 for (size_t _i = 0; _i < churn_per_sec_real; _i++) {
                     do_churn(rand_eng, uniform_int_dist);
                 }
             }
+            */
+            if (churn_ctr == churn_every - 1) {
+                if (sleep_debt != 0) {
+                    printf("ERROR: churn is taking too long. turn it down!\n");
+                    running = false;
+                    break;
+                }
+                uint64_t churn_trgt = churn_per_hour * std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count() / 1000 / 60 / 60;
+                uint64_t churn_epoch = churn_trgt - churn_last;
+                churn_last = churn_trgt;
+                if (churn_epoch != 0) {
+                    /*
+                    printf("Churning: %lu\n", churn_epoch);
+                    for (size_t _i = 0; _i < churn_epoch; _i++) {
+                        do_churn(rand_eng, uniform_int_dist);
+                    }
+                    */
+                    printf("Shuffling...\n");
+                    uint64_t size = num_records_;//sizeof(std::atomic<uint64_t>) * num_records_;
+                    std::shuffle(ranks, ranks + size, rand_eng);
+                }
+                churn_ctr = 0;
+            } else {
+                churn_ctr++;
+            }
         }
+        auto policy_time_taken = std::chrono::system_clock::now() - cur_time;
+        auto sleep_amt_ = target_epoch_time - policy_time_taken;
+        int64_t sleep_amt = std::chrono::duration_cast<std::chrono::microseconds>(sleep_amt_).count();
+        if (sleep_amt > 0) {
+            if (sleep_debt == 0) {
+                // sleep
+                usleep(sleep_amt);
+            } else {
+                // resolve sleep debt
+                sleep_debt -= sleep_amt;
+                if (sleep_debt < 0) sleep_debt = 0;
+            }
+        } else {
+            sleep_debt += -sleep_amt;
+        }
+        /*
+        if (policy_time_taken > target_epoch_time) {
+            printf("ERROR: policy time is taking TOO long. turn down the churn!\n");
+            running = false;
+            break;
+        }
+        std::this_thread::sleep_for(target_epoch_time - policy_time_taken);
+        */
     }
   }
 
@@ -1215,4 +1297,28 @@ int main(int argc, char* argv[]) {
   run(workload, num_load_threads, num_run_threads);
 
   return 0;
+}
+
+
+namespace std {
+    /**
+     * @brief Atomically swaps the underlying values of two std::atomic objects.
+     */
+    void swap(std::atomic<uint64_t>& a, std::atomic<uint64_t>& b) noexcept {
+        // Atomically load the value of 'a'
+        //uint64_t temp = a.load(std::memory_order_relaxed); 
+        uint64_t temp = a.load(std::memory_order_seq_cst); 
+        
+        // Atomically store the value of 'b' into 'a'
+        //a.store(b.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        a.store(b.load(std::memory_order_seq_cst), std::memory_order_seq_cst);
+        
+        // Atomically store the value of the original 'a' (held in temp) into 'b'
+        //b.store(temp, std::memory_order_relaxed);
+        b.store(temp, std::memory_order_seq_cst);
+        
+        // NOTE: This entire three-step swap is NOT a single atomic operation.
+        // It consists of three atomic operations. This is a thread-safe way 
+        // to swap two *independent* atomics.
+    }
 }

@@ -12,7 +12,12 @@ project(FASTER)
 # add_compile_definitions(USE_HEMEM)
 # add_compile_definitions(DUMP_ADDR)
 
-add_compile_definitions(VALUE_SIZE=1024)
+if(NOT DEFINED OVERRIDE_VALUE_SIZE)
+    # Default value
+    set(OVERRIDE_VALUE_SIZE 1024)
+endif()
+
+add_compile_definitions(VALUE_SIZE=${OVERRIDE_VALUE_SIZE})
 add_compile_definitions(OPT_PAGE_SIZE=2097152)
 
 # The set of additional options that we can pass into cmake. We currently support
