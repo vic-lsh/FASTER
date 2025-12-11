@@ -1,1 +1,1 @@
-#define CHURNS_PER_HOUR (1)
+#define CHURNS_PER_HOUR (1503858500)

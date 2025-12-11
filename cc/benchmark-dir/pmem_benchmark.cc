@@ -54,17 +54,21 @@ static constexpr uint64_t kNumWarmupThreads = 8;
 
 double zipfian_constant_;
 uint64_t num_records_;
+uint64_t num_records_nodead_;
 uint64_t num_ops_;
 uint64_t num_warmup_ops_;
 #ifdef USE_OPT
 uint64_t dram_size_;  // GB
 #endif
 long max_run_time;
+int64_t churn_per_hour_;
+int64_t churn_activation_period_sec_;
 volatile bool running = true;
 
 struct {
   double zetan;
   double theta;
+  double theta2;
   double zeta2theta;
   double alpha;
   double eta;
@@ -460,14 +464,26 @@ class RmwContext : public IAsyncContext {
   Key key_;
 };
 
+#define CACHELINE_SIZE (64)
+alignas(CACHELINE_SIZE) size_t rand_offsets[128] = {0};
+void memcpy_rand_byte(char* output_arr, const char* input_arr, size_t length, size_t thread_idx) {
+    size_t *offset_p = &rand_offsets[thread_idx];
+    if (*offset_p >= length) {
+        *offset_p = *offset_p % length;
+    }
+    output_arr[*offset_p] = input_arr[*offset_p];
+    *offset_p += 1;
+}
+
 class ReadContext : public IAsyncContext {
   public:
   typedef Key key_t;
   typedef Value value_t;
 
-  ReadContext(uint64_t key)
+  ReadContext(uint64_t key, size_t thread_idx)
     : key_{ key }
-    , output_length{ 0 } {
+    , output_length{ 0 }
+    , thread_idx_{ thread_idx } {
   }
 
   /// Copy (and deep-copy) constructor.
@@ -491,6 +507,7 @@ class ReadContext : public IAsyncContext {
       before = value.gen_lock_.load();
       output_length = value.length_;
       memcpy(output_arr, value.buffer(), output_length);
+      // memcpy_rand_byte((char*)output_arr, (const char*)value.buffer(), output_length, thread_idx_);
       after = value.gen_lock_.load();
     } while(before.gen_number != after.gen_number);
   }
@@ -503,9 +520,11 @@ class ReadContext : public IAsyncContext {
 
   private:
   Key key_;
+  size_t thread_idx_;
   public:
-  uint8_t output_length;
+  uint64_t output_length;
   uint64_t output_arr[VALUE_NUM_UINT64];
+  // uint64_t output_arr[8]; // tmp
 };
 
 class UpsertContext : public IAsyncContext {
@@ -632,7 +651,7 @@ uint64_t fnv1_64_hash_real(uint64_t value) {
 
 void init_zipfian_ctxt() {
   zipfian_ctxt_.zetan = 0;
-  for (uint64_t i = 1; i < num_records_ + 1; ++i) {
+  for (uint64_t i = 1; i < num_records_nodead_ + 1; ++i) {
     zipfian_ctxt_.zetan += 1.0 / (pow((double) i, zipfian_constant_));
   }
   zipfian_ctxt_.theta = zipfian_constant_;
@@ -641,10 +660,14 @@ void init_zipfian_ctxt() {
     zipfian_ctxt_.zeta2theta += 1.0 / (pow((double) i, zipfian_constant_));
   }
   zipfian_ctxt_.alpha = 1.0 / (1.0 - zipfian_ctxt_.theta);
-  zipfian_ctxt_.eta = (1 - pow(2.0 / (double) num_records_, 1 - zipfian_ctxt_.theta))
+  zipfian_ctxt_.eta = (1 - pow(2.0 / (double) num_records_nodead_, 1 - zipfian_ctxt_.theta))
     / (1 - (zipfian_ctxt_.zeta2theta / zipfian_ctxt_.zetan));
 
+  zipfian_ctxt_.theta2 = 1 + pow(0.5, zipfian_ctxt_.theta);
 
+}
+
+void init_ranks() {
   // init ranks
   ranks = new std::atomic<uint64_t>[num_records_];
   std::vector<uint64_t> ranks_init;
@@ -666,12 +689,12 @@ uint64_t next_8020(mt19937_64 &rand_eng, uniform_real_distribution<double> &dist
     if (u < 0.8) {
         // access the hot set
         double u_to_1 = u / 0.8;
-        double u_to_set = u_to_1 * (num_records_ * 0.2);
+        double u_to_set = u_to_1 * (num_records_nodead_ * 0.2);
         return ranks[(uint64_t)u_to_set];
     } else {
         // access the cold set
         double u_to_1 = (u - 0.8) / 0.2;
-        double u_to_set = u_to_1 * (num_records_ * 0.8) + num_records_ * 0.2;
+        double u_to_set = u_to_1 * (num_records_nodead_ * 0.8) + num_records_nodead_ * 0.2;
         return ranks[(uint64_t)u_to_set];
     }
 }
@@ -682,25 +705,28 @@ uint64_t next_zipfian(mt19937_64 &rand_eng, uniform_real_distribution<double> &d
   uint64_t ret;
   if (uz < 1) {
     ret = 0;
-  } else if (uz < 1 + pow(0.5, zipfian_ctxt_.theta)) {
+  } else if (uz < zipfian_ctxt_.theta2) {
     ret = 1;
   } else {
-    ret = (uint64_t) ((double)num_records_ * pow(zipfian_ctxt_.eta * u - zipfian_ctxt_.eta + 1, zipfian_ctxt_.alpha));
+    ret = (uint64_t) ((double)num_records_nodead_ * pow(zipfian_ctxt_.eta * u - zipfian_ctxt_.eta + 1, zipfian_ctxt_.alpha));
   }
-  //ret = fnv1_64_hash(ret + num_records_ * phase) % num_records_;
-  ret = fnv1_64_hash(ret) % num_records_;
+  //ret = fnv1_64_hash(ret + num_records_nodead_ * phase) % num_records_nodead_;
+  //ret = fnv1_64_hash(ret) % num_records_nodead_;
+  ret = ranks[ret];
   return ret;
 }
 
+/*
 uint64_t next_uniform(mt19937_64 &rand_eng, uniform_int_distribution<uint64_t> &dist) {
-  return dist(rand_eng);
+  return fnv1_64_hash(dist(rand_eng));
 }
+*/
 
 template <Op(*FN)(std::mt19937_64&)>
 void thread_warmup_store(store_t* store, size_t thread_idx, uint64_t num_ops) {
   mt19937_64 rand_eng{thread_idx + 0xBEEF};
 	uniform_real_distribution<double> uniform_real_dist(0, 1);
-	uniform_int_distribution<uint64_t> uniform_int_dist(0, num_records_ - 1);
+	uniform_int_distribution<uint64_t> uniform_int_dist(0, num_records_nodead_ - 1);
 
   Guid guid = store->StartSession();
 
@@ -716,7 +742,8 @@ void thread_warmup_store(store_t* store, size_t thread_idx, uint64_t num_ops) {
       //key = next_zipfian(rand_eng, uniform_real_dist, 0);
       key = next_zipfian(rand_eng, uniform_real_dist);
     else
-      key = next_uniform(rand_eng, uniform_int_dist);
+      //key = next_uniform(rand_eng, uniform_int_dist);
+      key = next_8020(rand_eng, uniform_real_dist);
 
     switch(FN(rand_eng)) {
     case Op::Insert:
@@ -741,7 +768,7 @@ void thread_warmup_store(store_t* store, size_t thread_idx, uint64_t num_ops) {
         CallbackContext<ReadContext> context{ ctxt };
       };
 
-      ReadContext context{ key };
+      ReadContext context{ key , thread_idx };
 
       Status result = store->Read(context, callback, 1);
       break;
@@ -846,12 +873,14 @@ void setup_store(store_t* store, size_t num_threads) {
       // Zipfian distribution
       mass = 1.0L / pow((double) (i + 1), zipfian_constant_);
       key_index = fnv1_64_hash(i) % num_records_;
+      print("idk what this is and/or how to convert it to now use num_records_nodead_\n");
+      exit(0);
     } else {
       // Uniform distribution
       mass = 1.0L;
       key_index = i;
     }
-    ReadContext context{ key_index };
+    ReadContext context{ key_index , 0};
 
     uint64_t ht_addr, log_addr;
     store->GetAddr(context, callback, &ht_addr, &log_addr);
@@ -920,11 +949,11 @@ template <Op(*FN)(std::mt19937_64&)>
 void thread_run_benchmark(store_t* store, size_t thread_idx, uint64_t num_ops) {
   mt19937_64 rand_eng{thread_idx};
 	uniform_real_distribution<double> uniform_real_dist(0, 1);
-	uniform_int_distribution<uint64_t> uniform_int_dist(0, num_records_ - 1);
-	uniform_int_distribution<uint64_t> uniform_int_dist1(0, num_records_/4 - 1);
-	uniform_int_distribution<uint64_t> uniform_int_dist2(num_records_/4, 2*num_records_/4 - 1);
-	uniform_int_distribution<uint64_t> uniform_int_dist3(2*num_records_/4, 3*num_records_/4 - 1);
-	uniform_int_distribution<uint64_t> uniform_int_dist4(3*num_records_/4, num_records_ - 1);
+	uniform_int_distribution<uint64_t> uniform_int_dist(0, num_records_nodead_ - 1);
+	uniform_int_distribution<uint64_t> uniform_int_dist1(0, num_records_nodead_/4 - 1);
+	uniform_int_distribution<uint64_t> uniform_int_dist2(num_records_nodead_/4, 2*num_records_nodead_/4 - 1);
+	uniform_int_distribution<uint64_t> uniform_int_dist3(2*num_records_nodead_/4, 3*num_records_nodead_/4 - 1);
+	uniform_int_distribution<uint64_t> uniform_int_dist4(3*num_records_nodead_/4, num_records_nodead_ - 1);
 
   auto start_time = std::chrono::high_resolution_clock::now();
 
@@ -950,14 +979,15 @@ void thread_run_benchmark(store_t* store, size_t thread_idx, uint64_t num_ops) {
           key = next_8020(rand_eng, uniform_real_dist);
       }
     else
-      key = next_uniform(rand_eng, uniform_int_dist);
+      key = next_8020(rand_eng, uniform_real_dist);
+      //key = next_uniform(rand_eng, uniform_int_dist);
     //if (phase_idx[thread_idx] == 0) key = next_uniform(rand_eng, uniform_int_dist1);
     //if (phase_idx[thread_idx] == 1) key = next_uniform(rand_eng, uniform_int_dist2);
     //if (phase_idx[thread_idx] == 2) key = next_uniform(rand_eng, uniform_int_dist3);
     //if (phase_idx[thread_idx] == 3) key = next_uniform(rand_eng, uniform_int_dist4);
     /*
     if (uniform_real_dist(rand_eng) < 0.9) {
-        key = fnv1_64_hash(phase_idx[thread_idx]) % num_records_;
+        key = fnv1_64_hash(phase_idx[thread_idx]) % num_records_nodead_;
     } else {
         key = next_uniform(rand_eng, uniform_int_dist);
     }
@@ -988,7 +1018,7 @@ void thread_run_benchmark(store_t* store, size_t thread_idx, uint64_t num_ops) {
         CallbackContext<ReadContext> context{ ctxt };
       };
 
-      ReadContext context{ key };
+      ReadContext context{ key , thread_idx };
 
       Status result = store->Read(context, callback, 1);
       ++reads_done;
@@ -1026,9 +1056,9 @@ void thread_run_benchmark(store_t* store, size_t thread_idx, uint64_t num_ops) {
          thread_idx, reads_done, writes_done, (double)duration.count() / kNanosPerSecond);
 }
 
-void do_churn(mt19937_64 &rand_eng, uniform_int_distribution<size_t> &dist) {
-    size_t idx1 = dist(rand_eng);
-    size_t idx2 = dist(rand_eng);
+void do_churn(mt19937_64 &rand_eng, uniform_int_distribution<size_t> &dist, uniform_int_distribution<size_t> &dist_nodead) {
+    size_t idx1 = dist_nodead(rand_eng);
+    size_t idx2 = dist_nodead(rand_eng);
     // non atomic swap, small race condition here lol
     uint64_t val1 = ranks[idx1];
     uint64_t val2 = ranks[idx2];
@@ -1046,7 +1076,7 @@ void run_benchmark(store_t* store, size_t num_threads) {
   //int num_phases = 4;
   //int phases[num_phases] = {0, -1, 0, 1, -1, 2};
   //int phases[num_phases] = {0,1,2,3,4,5};
-  int phases[num_phases] = {0};
+  int phases[num_phases] = {0}; // DO WEIRD DISTRO OR NOT
   int current_phase_idx = 0;
   for(size_t thread_idx = 0; thread_idx < num_threads; ++thread_idx) {
       do_zipfian[thread_idx] = phases[current_phase_idx] >= 0;
@@ -1060,8 +1090,8 @@ void run_benchmark(store_t* store, size_t num_threads) {
   auto max_duration = std::chrono::seconds(max_run_time);
   auto next_phase_change = std::chrono::seconds(max_run_time * (current_phase_idx+1) / num_phases);
   //uint64_t churn_per_hour = 1000000000;
-#include "cph.h"
-  uint64_t churn_per_hour = CHURNS_PER_HOUR;
+//#include "cph.h"
+  //uint64_t churn_per_hour = CHURNS_PER_HOUR; / TODO
   //uint64_t churn_per_sec = churn_per_hour / 3600;
   //uint64_t churn_per_sec_real = churn_per_sec == 0 ? 1 : churn_per_sec;
   //uint64_t churn_every = churn_per_sec == 0 ? 3600 / churn_per_hour : 1;
@@ -1077,9 +1107,11 @@ void run_benchmark(store_t* store, size_t num_threads) {
 #endif
   mt19937_64 rand_eng{12345678};
   uniform_int_distribution<size_t> uniform_int_dist(0, num_records_ - 1);
+  uniform_int_distribution<size_t> uniform_int_dist_nodead(0, num_records_nodead_ - 1);
   uint64_t churn_last = 0;
-  auto target_epoch_time = std::chrono::seconds(1);
-  auto churn_every = 50; // epochs
+  auto target_epoch_time = std::chrono::seconds(1); // DO NOT CHANGE WITHOUT SEEING LINE BELOW
+  int64_t churn_activation_period_epoch = churn_activation_period_sec_; // TODO actually convert this!
+  int64_t churn_every = churn_activation_period_epoch;
   uint64_t churn_ctr = 0;
   int64_t sleep_debt = 0;
   if (max_run_time > 0) {
@@ -1125,19 +1157,23 @@ void run_benchmark(store_t* store, size_t num_threads) {
                     running = false;
                     break;
                 }
-                uint64_t churn_trgt = churn_per_hour * std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count() / 1000 / 60 / 60;
-                uint64_t churn_epoch = churn_trgt - churn_last;
-                churn_last = churn_trgt;
-                if (churn_epoch != 0) {
-                    /*
-                    printf("Churning: %lu\n", churn_epoch);
-                    for (size_t _i = 0; _i < churn_epoch; _i++) {
-                        do_churn(rand_eng, uniform_int_dist);
-                    }
-                    */
+                if (churn_per_hour_ == -1 || churn_per_hour_ == -2) {
+                    // full shuffle
                     printf("Shuffling...\n");
-                    uint64_t size = num_records_;//sizeof(std::atomic<uint64_t>) * num_records_;
+                    //uint64_t size = num_records_;
+                    uint64_t size = churn_per_hour_ == -1 ? num_records_nodead_ : num_records_;
                     std::shuffle(ranks, ranks + size, rand_eng);
+                } else {
+                    // continuous churn
+                    int64_t churn_trgt = churn_per_hour_ * std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count() / 1000 / 60 / 60;
+                    int64_t churn_epoch = churn_trgt - churn_last;
+                    churn_last = churn_trgt;
+                    if (churn_epoch != 0) {
+                        printf("Churning: %lu\n", churn_epoch);
+                        for (int64_t _i = 0; _i < churn_epoch; _i++) {
+                            do_churn(rand_eng, uniform_int_dist, uniform_int_dist_nodead);
+                        }
+                    }
                 }
                 churn_ctr = 0;
             } else {
@@ -1203,6 +1239,7 @@ void run(Workload workload, size_t num_load_threads, size_t num_run_threads) {
   store.WarmUp();
 
   printf("Configuring distribution...\n");
+  init_ranks();
   if (zipfian_constant_ > 0) {
     init_zipfian_ctxt();
     printf("Zipfian data:\n");
@@ -1269,12 +1306,12 @@ struct {
 }
 
 int main(int argc, char* argv[]) {
-  size_t kNumArgs = 8;
+  size_t kNumArgs = 11;
 #ifdef USE_OPT
   kNumArgs++;
 #endif
   if(argc != kNumArgs + 1) {
-    printf("Usage: %s <workload> <# load threads> <# run threads> <zipfian constant> <# records> <# ops> <# warmup ops> <max run time>", argv[0]);
+    printf("Usage: %s <workload> <# load threads> <# run threads> <zipfian constant> <# records> <# ops> <# warmup ops> <max run time> <# records not dead> <churn_per_hour> <churn_activation_period_sec>", argv[0]);
 #ifdef USE_OPT
     printf(" <DRAM Size (GB)>");
 #endif
@@ -1290,8 +1327,11 @@ int main(int argc, char* argv[]) {
   num_ops_ = std::atol(argv[6]);
   num_warmup_ops_ = std::atol(argv[7]);
   max_run_time = std::atol(argv[8]);
+  num_records_nodead_ = std::atol(argv[9]);
+  churn_per_hour_ = std::atol(argv[10]);
+  churn_activation_period_sec_ = std::atol(argv[11]);
 #ifdef USE_OPT
-  dram_size_ = std::atol(argv[9]);
+  dram_size_ = std::atol(argv[12]);
 #endif
 
   run(workload, num_load_threads, num_run_threads);
